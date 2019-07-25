@@ -13,3 +13,5 @@ docopt = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.8"
 structopt = "0.2"
+tokio-codec = "0.1"
+bytes = "*" # Get the same version as tokio-codec
