@@ -1,0 +1,15 @@
+[package]
+name = "shellac-server"
+version = "0.1.0"
+authors = ["Xavier L'Heureux <xavier.lheureux@icloud.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+memmap = "0.7"
+tokio = "0.1"
+docopt = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.8"
+structopt = "0.2"
