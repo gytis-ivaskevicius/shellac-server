@@ -1,15 +1,12 @@
 use shellac_server::{codec::ArgvCodec, completion};
 
-use std::fs;
+use std::fs::{self, File};
 use std::io;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use structopt::StructOpt;
-use tokio::fs::File;
-use tokio::net::UnixListener;
-use tokio::prelude::future::result;
-use tokio::prelude::*;
-use tokio_codec::FramedRead;
 
 /// A Shell Agnostic Completion server
 #[derive(StructOpt, Debug)]
@@ -44,6 +41,16 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
     Ok(path.with_extension("shellac"))
 }
 
+fn handle_client(stream: UnixStream) -> Result<(), shellac_server::Error> {
+    let mut codec = ArgvCodec::new(&stream);
+    while let Some(request) = codec.decode()? {
+        let path = get_comp_file(&request.argv()[0])?;
+        let file = File::open(path)?;
+        println!("Received: {:?}", completion::complete(file, request)?);
+    }
+    Ok(())
+}
+
 fn main() {
     let opts = Opts::from_args();
 
@@ -56,35 +63,18 @@ fn main() {
         UnixListener::bind(&path).unwrap()
     });
 
-    let task = listener
-        .incoming()
-        .map_err(|err| {
-            // Handle error by printing to STDOUT.
-            println!("Could not accept socket request {}", err);
-        })
-        .for_each(|socket| {
-            println!("socket connected!");
-            let (reader, _writer) = socket.split();
-            // copy bytes from the reader into the writer
-            FramedRead::new(reader, ArgvCodec::new())
-                .and_then(|request| {
-                    result(get_comp_file(&request.argv()[0]))
-                        .and_then(File::open)
-                        .map_err(Into::into)
-                        .and_then(|file| completion::complete(file, request))
-                })
-                .for_each(|result| {
-                    println!("Received result {:?}", result);
-                    Ok(())
-                })
-                .then(|result| {
-                    match result {
-                        Ok(()) => println!("Socket closed"),
-                        Err(err) => println!("Could not execute request: {}", err),
-                    }
-                    Ok(())
-                })
-        });
-
-    tokio::run(task)
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                thread::spawn(|| match handle_client(stream) {
+                    Ok(()) => println!("Socket closed"),
+                    Err(err) => println!("Could not execute request: {}", err),
+                });
+            }
+            Err(err) => {
+                println!("Could not accept socket request {}", err);
+                break;
+            }
+        }
+    }
 }

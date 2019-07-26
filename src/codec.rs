@@ -1,81 +1,66 @@
-use bytes::BytesMut;
+use std::io::{self, BufRead, BufReader, BufWriter, Read};
+use std::os::unix::net::UnixStream;
 
 use super::AutocompRequest;
 use super::Error;
 
-#[derive(Default, Clone, Debug, Hash)]
-pub struct ArgvCodec {
-    read: usize,         // The number of bytes read
-    argc: usize,         // Arg count
-    word: Option<usize>, // What word to autocomplete
-    argv: Vec<String>,   // The result
+#[derive(Debug)]
+pub struct ArgvCodec<'a> {
+    reader: BufReader<&'a UnixStream>,
+    writer: BufWriter<&'a UnixStream>,
 }
 
-impl ArgvCodec {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl Drop for ArgvCodec {
-    fn drop(&mut self) {
-        if self.word.is_none() || self.argc != self.argv.len() {
-            eprintln!(
-                "Request dropped in an incoherent state: argc = {}, argv (partial) = {:?}",
-                self.argc, self.argv
-            );
+impl<'a> ArgvCodec<'a> {
+    pub fn new(socket: &'a UnixStream) -> Self {
+        Self {
+            reader: BufReader::new(socket),
+            writer: BufWriter::new(socket),
         }
     }
 }
 
-impl tokio_codec::Decoder for ArgvCodec {
-    type Item = AutocompRequest;
-    type Error = Error;
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if self.argc == 0 {
-            if buf.len() < 2 {
-                return Ok(None);
-            } else {
-                self.argc = u16::from_be_bytes([buf[0], buf[1]]) as usize;
-                buf.advance(2);
-                self.argv.reserve(self.argc);
-            }
+impl<'a> ArgvCodec<'a> {
+    pub fn decode(&mut self) -> Result<Option<AutocompRequest>, Error> {
+        if self.reader.fill_buf()?.len() == 0 {
+            return Ok(None);
         }
-        if self.word.is_none() {
-            if buf.len() < 2 {
-                return Ok(None);
-            } else {
-                let word = u16::from_be_bytes([buf[0], buf[1]]) as usize;
-                if word >= self.argc {
-                    return Err(Error::WordOutOfRange(self.argc, word));
-                }
-                self.word = Some(word);
-                buf.advance(2);
-            }
+        let mut argc = [0u8; 2];
+        self.reader.read_exact(&mut argc)?;
+        let argc = u16::from_be_bytes(argc) as usize;
+
+        let mut word = [0u8; 2];
+        self.reader.read_exact(&mut word)?;
+        let word = u16::from_be_bytes(word) as usize;
+        if word >= argc {
+            return Err(Error::WordOutOfRange(argc, word));
         }
 
-        while let Some(mut offset) = buf[self.read..].iter().position(|&b| b == b'\0') {
-            // The index of the '\n' is at the sum of the start position + the offset found.
-            offset += self.read;
-            let line = buf.split_to(offset + 1);
-            // Drop the nul terminator
-            let line = &line[..line.len() - 1];
-            // Convert the bytes to a string and panic if the bytes are not valid utf-8.
-            let line = std::str::from_utf8(line)?.to_string();
-
-            self.argv.push(line);
-            self.read = 0;
-            if self.argv.len() == self.argc {
-                self.argc = 0;
-                // Set the search start index back to 0.
-                return Ok(Some(AutocompRequest {
-                    argv: std::mem::replace(&mut self.argv, Vec::new()),
-                    word: self.word.unwrap(), // If the word is none, it is impossible that it compes here
-                }));
+        std::iter::repeat_with(|| {
+            let mut string = Vec::with_capacity(32);
+            if self.reader.fill_buf()?.len() == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("Protocol failure, wrong argc ({})", argc),
+                )
+                .into());
             }
-        }
+            self.reader.read_until(b'\0', &mut string)?;
+            if string.pop() != Some(b'\0') {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Protocol failure, an argument was improperly null terminated",
+                )
+                .into());
+            }
+            // Convert the bytes to a string and error if the bytes are not valid utf-8.
+            String::from_utf8(string).map_err(Into::into)
+        })
+        .take(argc)
+        .collect::<Result<_, _>>()
+        .map(|argv| Some(AutocompRequest { argv, word }))
+    }
 
-        // Ok(None) signifies that more data is needed to produce a full frame.
-        Ok(None)
+    pub fn encode(&mut self, _result: super::Result) -> Result<(), Error> {
+        Ok(())
     }
 }

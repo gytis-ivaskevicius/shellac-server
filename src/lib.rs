@@ -1,15 +1,19 @@
 pub mod codec;
 pub mod completion;
 
-use tokio::io;
-
 use std::fmt;
-use std::str::Utf8Error;
+use std::io;
+use std::string::FromUtf8Error;
+
+#[derive(Debug)]
+pub struct Result {
+    choices: Vec<String>,
+}
 
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    FileNotUtf8(Utf8Error),
+    FileNotUtf8(FromUtf8Error),
     WordOutOfRange(usize, usize),
     DocOpt(String),
 }
@@ -20,8 +24,8 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<Utf8Error> for Error {
-    fn from(cause: Utf8Error) -> Self {
+impl From<FromUtf8Error> for Error {
+    fn from(cause: FromUtf8Error) -> Self {
         Error::FileNotUtf8(cause)
     }
 }

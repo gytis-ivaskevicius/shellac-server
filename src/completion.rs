@@ -1,7 +1,8 @@
-use bytes::BytesMut;
 use docopt::parse::Parser;
-use tokio::fs::File;
-use tokio::prelude::*;
+
+use std::fs::File;
+use std::io::BufReader;
+use std::io::Read;
 
 use super::AutocompRequest;
 use super::Error;
@@ -59,81 +60,33 @@ impl<'a> DocOptSearch<'a> {
 }
 
 pub struct Completer {
-    file: File,
-    buf: BytesMut,
+    file: BufReader<File>,
     request: AutocompRequest,
-    state: State,
 }
 
-enum State {
-    ReadingDocOpt,
-    ReadingYaml,
-    Done,
+pub fn complete(file: File, request: AutocompRequest) -> Result<super::Result, Error> {
+    Completer::new(file, request).complete()
 }
 
-pub fn complete(file: File, request: AutocompRequest) -> Completer {
-    Completer {
-        request,
-        buf: BytesMut::with_capacity(1024),
-        file,
-        state: State::ReadingDocOpt,
+impl Completer {
+    pub fn new(file: File, request: AutocompRequest) -> Self {
+        Self {
+            request,
+            file: BufReader::new(file),
+        }
     }
-}
 
-impl Future for Completer {
-    type Item = Vec<String>;
-    type Error = Error;
+    pub fn complete(mut self) -> Result<super::Result, Error> {
+        let mut content = String::with_capacity(1024);
 
-    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        loop {
-            match self.state {
-                State::ReadingYaml => {
-                    self.buf.reserve(1024);
+        self.file.read_to_string(&mut content)?;
 
-                    let n = match { self.file.read_buf(&mut self.buf) } {
-                        Ok(Async::NotReady) => return Ok(Async::NotReady),
-                        Ok(Async::Ready(v)) => v,
-                        Err(err) => return Err(err.into()),
-                    };
-                    if n == 0 {
-                        self.state = State::Done;
-                        return match std::str::from_utf8(&self.buf) {
-                            Ok(v) => Ok(Async::Ready(vec![v.to_string()])),
-                            Err(err) => Err(Error::FileNotUtf8(err)),
-                        };
-                    }
-                }
-                State::ReadingDocOpt => {
-                    self.buf.reserve(1024);
-
-                    let n = match { self.file.read_buf(&mut self.buf) } {
-                        Ok(Async::NotReady) => return Ok(Async::NotReady),
-                        Ok(Async::Ready(v)) => v,
-                        Err(err) => return Err(err.into()),
-                    };
-
-                    let pos = self.buf.len() - n;
-                    if let Some(mut position) = self.buf[pos.saturating_sub(5)..]
-                        .windows(5)
-                        .position(|window| window == b"\n+++\n")
-                    {
-                        position += pos;
-                        let docopt = self.buf.split_to(position);
-                        let docopt =
-                            std::str::from_utf8(&docopt[..docopt.len().saturating_sub(5)])?.trim();
-                        match DocOptSearch::new(&self.request, &docopt).choices()? {
-                            SearchResult::Literals(literals) => {
-                                self.state = State::Done;
-                                return Ok(Async::Ready(literals));
-                            }
-                            SearchResult::Lookup(_name) => {
-                                self.state = State::ReadingYaml;
-                            }
-                        }
-                    }
-                }
-                State::Done => panic!("poll a Completer after it's done"),
-            }
+        let mut parts = content.splitn(2, "\n+++\n");
+        // TODO: Add errors
+        let docopt = parts.next().expect("Not a valid completion file");
+        match DocOptSearch::new(&self.request, &docopt.trim()).choices()? {
+            SearchResult::Literals(literals) => return Ok(super::Result { choices: literals }),
+            SearchResult::Lookup(_name) => unimplemented!(),
         }
     }
 }
