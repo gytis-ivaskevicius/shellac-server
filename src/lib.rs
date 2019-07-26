@@ -1,0 +1,64 @@
+pub mod codec;
+pub mod completion;
+
+use tokio::io;
+
+use std::fmt;
+use std::str::Utf8Error;
+
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    FileNotUtf8(Utf8Error),
+    WordOutOfRange(usize, usize),
+    DocOpt(String),
+}
+
+impl From<io::Error> for Error {
+    fn from(cause: io::Error) -> Self {
+        Error::Io(cause)
+    }
+}
+
+impl From<Utf8Error> for Error {
+    fn from(cause: Utf8Error) -> Self {
+        Error::FileNotUtf8(cause)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Io(cause) => write!(f, "io error: {}", cause),
+            Error::WordOutOfRange(len, word) => write!(
+                f,
+                "the word {} can't be autocompleted because it is out of bound for argc = {}",
+                word, len
+            ),
+            Error::FileNotUtf8(err) => write!(f, "The completion file is not valid utf8: {}", err),
+            Error::DocOpt(err) => write!(
+                f,
+                "The completion file contained an invalid docopt format: {}",
+                err
+            ),
+        }
+    }
+}
+
+#[derive(Default, Clone, Debug, Hash)]
+pub struct AutocompRequest {
+    argv: Vec<String>,
+    word: usize,
+}
+
+impl AutocompRequest {
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    pub fn word(&self) -> usize {
+        self.word
+    }
+}
