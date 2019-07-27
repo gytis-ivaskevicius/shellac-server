@@ -1,7 +1,7 @@
 use shellac_server::{codec::ArgvCodec, completion};
 
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -42,11 +42,18 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
 }
 
 fn handle_client(stream: UnixStream) -> Result<(), shellac_server::Error> {
+    use std::time::{Duration, Instant};
+    let mut writer = BufWriter::new(&stream);
     let mut codec = ArgvCodec::new(&stream);
     while let Some(request) = codec.decode()? {
+        let start = Instant::now();
         let path = get_comp_file(&request.argv()[0])?;
         let file = File::open(path)?;
-        println!("Received: {:?}", completion::complete(file, request)?);
+        let completed = completion::complete(file, request)?;
+        let duration = start.elapsed();
+        serde_json::to_writer(&mut writer, &completed);
+        writer.flush();
+        println!("Time elapsed in expensive_function() is: {:?}", duration);
     }
     Ok(())
 }

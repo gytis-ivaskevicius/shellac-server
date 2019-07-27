@@ -1,11 +1,12 @@
 pub mod codec;
 pub mod completion;
 
+use serde::Serialize;
 use std::fmt;
 use std::io;
 use std::string::FromUtf8Error;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Result {
     choices: Vec<String>,
 }

@@ -14,5 +14,5 @@ path = "src/lib.rs"
 docopt = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.8"
+serde_json = "1.0" # Temporary, only while not scheme is defined
 structopt = "0.2"
-bytes = "*" # Get the same version as tokio-codec

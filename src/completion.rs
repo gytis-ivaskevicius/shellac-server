@@ -28,8 +28,7 @@ impl<'a> DocOptSearch<'a> {
     }
 
     fn choices(self) -> Result<SearchResult, Error> {
-        let docopt = Parser::new(self.docopt).map_err(Error::DocOpt)?;
-        println!("Docopt: {:?}", docopt);
+        let _docopt = Parser::new(self.docopt).map_err(Error::DocOpt)?;
         let options_first = true;
         let mut do_flags = true;
 
