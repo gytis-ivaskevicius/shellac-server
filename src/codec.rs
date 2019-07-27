@@ -1,25 +1,20 @@
-use std::io::{self, BufRead, BufReader, BufWriter, Read};
-use std::os::unix::net::UnixStream;
+use std::io::{self, BufRead, Read};
 
 use super::AutocompRequest;
 use super::Error;
 
 #[derive(Debug)]
-pub struct ArgvCodec<'a> {
-    reader: BufReader<&'a UnixStream>,
-    writer: BufWriter<&'a UnixStream>,
+pub struct ArgvCodec<R: Read + BufRead> {
+    reader: R,
 }
 
-impl<'a> ArgvCodec<'a> {
-    pub fn new(socket: &'a UnixStream) -> Self {
-        Self {
-            reader: BufReader::new(socket),
-            writer: BufWriter::new(socket),
-        }
+impl<R: Read + BufRead> ArgvCodec<R> {
+    pub fn new(reader: R) -> Self {
+        Self { reader }
     }
 }
 
-impl<'a> ArgvCodec<'a> {
+impl<R: Read + BufRead> ArgvCodec<R> {
     pub fn decode(&mut self) -> Result<Option<AutocompRequest>, Error> {
         if self.reader.fill_buf()?.len() == 0 {
             return Ok(None);
@@ -58,9 +53,5 @@ impl<'a> ArgvCodec<'a> {
         .take(argc)
         .collect::<Result<_, _>>()
         .map(|argv| Some(AutocompRequest { argv, word }))
-    }
-
-    pub fn encode(&mut self, _result: super::Result) -> Result<(), Error> {
-        Ok(())
     }
 }
