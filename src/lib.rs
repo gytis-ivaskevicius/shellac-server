@@ -52,7 +52,7 @@ impl fmt::Display for Error {
     }
 }
 
-#[derive(Default, Clone, Debug, Hash)]
+#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AutocompRequest {
     argv: Vec<String>,
     word: usize,

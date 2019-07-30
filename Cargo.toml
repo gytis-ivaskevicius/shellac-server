@@ -11,8 +11,9 @@ name = "shellac_server"
 path = "src/lib.rs"
 
 [dependencies]
-docopt = "1"
+regex = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.8"
 serde_json = "1.0" # Temporary, only while not scheme is defined
 structopt = "0.2"
+retain_mut = "0.1"
