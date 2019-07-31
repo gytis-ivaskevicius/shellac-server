@@ -23,10 +23,10 @@ pub struct Definition {
     num_counters: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Arg {
     regex: Option<Regex>,
-    choices: BTreeMap<ChoiceType, Option<String>>,
+    choices: BTreeMap<ChoiceType, Choice>,
 }
 
 impl Eq for Arg {}
@@ -37,7 +37,7 @@ impl PartialEq for Arg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Choice {
     description: Option<String>,
     sentinel: Option<String>, // TODO: better representation for sentinels
@@ -62,7 +62,7 @@ pub struct VMSearcher<'a> {
     args: &'a AutocompRequest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Searcher {
     counters: Vec<u8>,
     step: u8,
@@ -74,6 +74,14 @@ impl ChoiceType {
         match self {
             ChoiceType::Literal(lit) => lit,
             ChoiceType::Reference(prefix, _) => prefix,
+        }
+    }
+
+    pub fn resolve(&self, prefix: &str) -> Option<String> {
+        match self {
+            ChoiceType::Literal(lit) if lit.starts_with(prefix) => Some(lit.to_string()),
+            ChoiceType::Reference(prefix, reference) => Some(format!("{}<{}>", prefix, reference)),
+            _ => None,
         }
     }
 }
@@ -154,6 +162,7 @@ impl Arg {
                 }));
             }
         } else {
+            results.extend(self.choices.keys().filter_map(|choice| choice.resolve(arg)))
         }
     }
 }
@@ -245,18 +254,21 @@ impl<'a> VMSearcher<'a> {
             }
         }
 
-        let VMSearcher { stack, args, def } = self;
+        let VMSearcher {
+            mut stack,
+            args,
+            def,
+        } = self;
         let arg = &args.argv()[args.word];
 
         let mut results = Vec::with_capacity(20);
+        stack.sort_unstable_by_key(|searcher| searcher.step);
+        stack.dedup_by_key(|searcher| searcher.step);
         for searcher in stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &def.steps[completion as usize] {
                     check.resolve(&mut results, arg);
                 }
-            }
-            if !results.is_empty() {
-                break;
             }
         }
         Ok(results)
@@ -272,10 +284,10 @@ impl Definition {
                 Step::Check(Arg {
                     regex: Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
                     choices: vec![
-                        ("long".parse().unwrap(), Some("hello".to_string())),
-                        ("lower".parse().unwrap(), Some("hello".to_string())),
-                        ("l".parse().unwrap(), Some("hello".to_string())),
-                        ("a".parse().unwrap(), Some("hello".to_string())),
+                        ("long".parse().unwrap(), Choice::default()),
+                        ("lower".parse().unwrap(), Choice::default()),
+                        ("l".parse().unwrap(), Choice::default()),
+                        ("a".parse().unwrap(), Choice::default()),
                     ]
                     .into_iter()
                     .collect(),
@@ -283,18 +295,20 @@ impl Definition {
                 Step::Split(1),
                 Step::Split(5),
                 Step::Check(Arg {
-                    regex: Some(Regex::new(r"^--$")?),
-                    choices: vec![].into_iter().collect(),
-                }),
-                Step::Check(Arg {
                     regex: None,
-                    choices: vec![("<file>".parse().unwrap(), None)]
+                    choices: vec![("--".parse().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("<file>".parse().unwrap(), None)]
+                    choices: vec![("<file>".parse().unwrap(), Choice::default())]
+                        .into_iter()
+                        .collect(),
+                }),
+                Step::Check(Arg {
+                    regex: None,
+                    choices: vec![("<file>".parse().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
