@@ -1,6 +1,7 @@
 use regex::Regex;
 use retain_mut::RetainMut;
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
@@ -25,7 +26,7 @@ pub struct Definition {
 #[derive(Debug, Clone)]
 pub struct Arg {
     regex: Option<Regex>,
-    choices: Vec<Choice>,
+    choices: BTreeMap<ChoiceType, Option<String>>,
 }
 
 impl Eq for Arg {}
@@ -39,14 +40,13 @@ impl PartialEq for Arg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     description: Option<String>,
-    typ: ChoiceType,
     sentinel: Option<String>, // TODO: better representation for sentinels
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChoiceType {
     Literal(String),
-    Reference(String),
+    Reference(String, String),
 }
 
 #[derive(Debug)]
@@ -69,34 +69,92 @@ pub struct Searcher {
     completion: Option<u8>,
 }
 
-impl Iterator for ChoiceResolver {
-    type Item = String;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl ChoiceType {
+    pub fn as_str(&self) -> &str {
         match self {
-            ChoiceResolver::Literal(iter) => iter.next(),
-            ChoiceResolver::Reference(iter) => iter.next(),
+            ChoiceType::Literal(lit) => lit,
+            ChoiceType::Reference(prefix, _) => prefix,
         }
     }
 }
 
-impl ChoiceResolver {
-    pub fn new<'a>(choice: &'a Choice) -> Self {
-        match &choice.typ {
-            ChoiceType::Literal(lit) => ChoiceResolver::Literal(std::iter::once(lit.to_string())),
-            ChoiceType::Reference(reference) => {
-                ChoiceResolver::Reference(vec![reference.to_string()].into_iter())
+impl std::str::FromStr for ChoiceType {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut parts = input.splitn(2, '<');
+        let start = parts.next().unwrap();
+        if let Some(desc) = parts.next() {
+            let (desc, end) = desc.split_at(desc.len() - 1);
+            if end == ">" {
+                Ok(ChoiceType::Reference(start.into(), desc.into()))
+            } else {
+                Err(())
             }
+        } else {
+            Ok(ChoiceType::Literal(input.into()))
         }
     }
 }
 
-impl<'a> IntoIterator for &'a Choice {
-    type Item = String;
-    type IntoIter = ChoiceResolver;
+impl std::cmp::Ord for ChoiceType {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+impl std::cmp::PartialOrd for ChoiceType {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.as_str().partial_cmp(other.as_str())
+    }
+}
 
-    fn into_iter(self) -> ChoiceResolver {
-        ChoiceResolver::new(self)
+impl Arg {
+    pub fn resolve(&self, results: &mut Vec<String>, arg: &str) {
+        if let Some(regex) = &self.regex {
+            let len = arg.len();
+            let mut test = arg.to_string();
+
+            for option in self.choices.keys() {
+                test.truncate(len);
+                test.push_str(option.as_str());
+
+                // TODO: this does not check all capture groups
+                if let Some(captures) = regex.captures(&test) {
+                    if captures.iter().any(|capture| {
+                        capture.map_or(false, |capture| {
+                            self.choices
+                                .keys()
+                                .any(|key| key.as_str() == capture.as_str())
+                        })
+                    }) {
+                        results.push(test.clone());
+                    }
+                }
+            }
+            if !results.is_empty() {
+                return;
+            }
+            if let Some(captures) = regex.captures(arg) {
+                results.extend(captures.iter().filter_map(|capture| {
+                    let capture = capture?;
+                    if let Some(choice) = self
+                        .choices
+                        .keys()
+                        .find(|option| option.as_str().starts_with(capture.as_str()))
+                    {
+                        Some(format!(
+                            "{}{}{}",
+                            &arg[..capture.start()],
+                            choice.as_str(),
+                            &arg[capture.end()..]
+                        ))
+                    } else {
+                        None
+                    }
+                }));
+            }
+        } else {
+        }
     }
 }
 
@@ -159,7 +217,7 @@ impl<'a> VMSearcher<'a> {
                     }
 
                     match &def.steps[searcher.step as usize] {
-                        Step::Check(_def) => {
+                        Step::Check(_arg_def) => {
                             searcher.completion = Some(searcher.step);
                             searcher.step();
                             true
@@ -174,12 +232,12 @@ impl<'a> VMSearcher<'a> {
                     .retain_mut(|searcher| match def.steps.get(searcher.step as usize) {
                         Some(Step::Check(ref arg_def)) => {
                             searcher.step();
-                            arg_def
-                                .regex
-                                .as_ref()
-                                .filter(|regex| !regex.is_match(arg))
-                                .is_none()
-                                && (searcher.step as usize) < def.steps.len()
+                            (searcher.step as usize) < def.steps.len()
+                                && (if let Some(regex) = &arg_def.regex {
+                                    regex.is_match(arg)
+                                } else {
+                                    true
+                                })
                         }
                         None | Some(Step::Match) => false,
                         _ => unreachable!(),
@@ -187,77 +245,58 @@ impl<'a> VMSearcher<'a> {
             }
         }
 
-        let VMSearcher {
-            mut stack,
-            args,
-            def,
-        } = self;
-        stack.sort_unstable_by(|a, b| match (a.completion, b.completion) {
-            (Some(a), Some(b)) => a.cmp(&b),
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (None, None) => std::cmp::Ordering::Equal,
-        });
+        let VMSearcher { stack, args, def } = self;
+        let arg = &args.argv()[args.word];
 
-        if let Some(result) = stack
-            .into_iter()
-            .filter_map(|searcher| searcher.completion)
-            .map(|idx| &def.steps[idx as usize])
-            //                .filter(|def| {
-            //                    def.regex
-            //                        .as_ref()
-            //                        .filter(|regex| !regex.is_match(&args.argv()[args.word]))
-            //                        .is_none()
-            //                })
-            .next()
-        {
-            let result = if let Step::Check(check) = result {
-                check
-            } else {
-                unreachable!()
-            };
-            Ok(result.choices.iter().flat_map(|choice| choice).collect())
-        } else {
-            Ok(Vec::new())
+        let mut results = Vec::with_capacity(20);
+        for searcher in stack {
+            if let Some(completion) = searcher.completion {
+                if let Step::Check(check) = &def.steps[completion as usize] {
+                    check.resolve(&mut results, arg);
+                }
+            }
+            if !results.is_empty() {
+                break;
+            }
         }
+        Ok(results)
     }
 }
 
 impl Definition {
     fn new<T: AsRef<str>>(_def: &T) -> Result<Self, regex::Error> {
-        Ok(Definition {
+        Ok(Self {
             num_counters: 0,
             steps: vec![
                 Step::Split(3),
                 Step::Check(Arg {
                     regex: Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
-                    choices: vec![Choice {
-                        description: Some("hello".to_string()),
-                        typ: ChoiceType::Literal("l".to_owned()),
-                        sentinel: None,
-                    }],
+                    choices: vec![
+                        ("long".parse().unwrap(), Some("hello".to_string())),
+                        ("lower".parse().unwrap(), Some("hello".to_string())),
+                        ("l".parse().unwrap(), Some("hello".to_string())),
+                        ("a".parse().unwrap(), Some("hello".to_string())),
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
                 Step::Split(1),
                 Step::Split(5),
                 Step::Check(Arg {
                     regex: Some(Regex::new(r"^--$")?),
-                    choices: vec![],
+                    choices: vec![].into_iter().collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![Choice {
-                        description: None,
-                        typ: ChoiceType::Reference("file".to_string()),
-                        sentinel: None,
-                    }],
+                    choices: vec![("<file>".parse().unwrap(), None)]
+                        .into_iter()
+                        .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![Choice {
-                        description: None,
-                        typ: ChoiceType::Reference("file".to_owned()),
-                        sentinel: None,
-                    }],
+                    choices: vec![("<file>".parse().unwrap(), None)]
+                        .into_iter()
+                        .collect(),
                 }),
                 Step::Match,
             ],

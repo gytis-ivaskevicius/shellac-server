@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+
 pub mod codec;
 pub mod completion;
 
@@ -59,11 +61,11 @@ pub struct AutocompRequest {
 }
 
 impl AutocompRequest {
-    pub fn argv(&self) -> &[String] {
+    pub const fn argv(&self) -> &Vec<String> {
         &self.argv
     }
 
-    pub fn word(&self) -> usize {
+    pub const fn word(&self) -> usize {
         self.word
     }
 }
