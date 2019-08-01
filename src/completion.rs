@@ -326,25 +326,140 @@ impl Definition {
         Ok(Self {
             num_counters: 0,
             steps: vec![
+                Step::Split(9),
                 Step::Split(3),
                 Step::Check(Arg {
                     regex: Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
                     choices: vec![
-                        ("long".parse().unwrap(), Choice::default()),
-                        ("lower".parse().unwrap(), Choice::default()),
-                        ("l".parse().unwrap(), Choice::default()),
-                        ("a".parse().unwrap(), Choice::default()),
+                        // TODO: -C <path> and -c <name>=<value>
+                        ("version".parse().unwrap(), Choice::default()),
+                        ("help".parse().unwrap(), Choice::default()),
+                        ("exec-path".parse().unwrap(), Choice::default()),
+                        ("exec-path=<file>".parse().unwrap(), Choice::default()),
+                        ("html-path".parse().unwrap(), Choice::default()),
+                        ("man-path".parse().unwrap(), Choice::default()),
+                        ("info-path".parse().unwrap(), Choice::default()),
+                        ("p".parse().unwrap(), Choice::default()),
+                        ("paginate".parse().unwrap(), Choice::default()),
+                        ("P".parse().unwrap(), Choice::default()),
+                        ("no-pager".parse().unwrap(), Choice::default()),
+                        ("no-replace-objects".parse().unwrap(), Choice::default()),
+                        ("bare".parse().unwrap(), Choice::default()),
+                        ("git-dir=<file>".parse().unwrap(), Choice::default()),
+                        ("work-tree=<file>".parse().unwrap(), Choice::default()),
+                        ("namespace=<file>".parse().unwrap(), Choice::default()),
+                        ("super-prefix=<file>".parse().unwrap(), Choice::default()),
                     ]
                     .into_iter()
                     .collect(),
                 }),
-                Step::Split(1),
-                Step::Split(5),
+                Step::Split(6),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("--".parse().unwrap(), Choice::default())]
+                    choices: vec![("-C".parse().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
+                }),
+                Step::Check(Arg {
+                    regex: None,
+                    choices: vec![("<file>".parse().unwrap(), Choice::default())]
+                        .into_iter()
+                        .collect(),
+                }),
+                Step::Check(Arg {
+                    regex: None,
+                    choices: vec![("-c".parse().unwrap(), Choice::default())]
+                        .into_iter()
+                        .collect(),
+                }),
+                Step::Check(Arg {
+                    regex: None,
+                    choices: vec![("<name>=<file>".parse().unwrap(), Choice::default())]
+                        .into_iter()
+                        .collect(),
+                }),
+                Step::Split(1),
+                Step::Check(Arg {
+                    regex: None,
+                    choices: vec![
+                        ("add".parse().unwrap(), Choice::default()),
+                        ("am".parse().unwrap(), Choice::default()),
+                        ("archive".parse().unwrap(), Choice::default()),
+                        ("bisect".parse().unwrap(), Choice::default()),
+                        ("branch".parse().unwrap(), Choice::default()),
+                        ("bundle".parse().unwrap(), Choice::default()),
+                        ("checkout".parse().unwrap(), Choice::default()),
+                        ("cherry-pick".parse().unwrap(), Choice::default()),
+                        ("citool".parse().unwrap(), Choice::default()),
+                        ("clean".parse().unwrap(), Choice::default()),
+                        ("clone".parse().unwrap(), Choice::default()),
+                        ("commit".parse().unwrap(), Choice::default()),
+                        ("describe".parse().unwrap(), Choice::default()),
+                        ("diff".parse().unwrap(), Choice::default()),
+                        ("fetch".parse().unwrap(), Choice::default()),
+                        ("format-patch".parse().unwrap(), Choice::default()),
+                        ("gc".parse().unwrap(), Choice::default()),
+                        ("grep".parse().unwrap(), Choice::default()),
+                        ("gui".parse().unwrap(), Choice::default()),
+                        ("init".parse().unwrap(), Choice::default()),
+                        ("log".parse().unwrap(), Choice::default()),
+                        ("merge".parse().unwrap(), Choice::default()),
+                        ("mv".parse().unwrap(), Choice::default()),
+                        ("notes".parse().unwrap(), Choice::default()),
+                        ("pull".parse().unwrap(), Choice::default()),
+                        ("push".parse().unwrap(), Choice::default()),
+                        ("range-diff".parse().unwrap(), Choice::default()),
+                        ("rebase".parse().unwrap(), Choice::default()),
+                        ("reset".parse().unwrap(), Choice::default()),
+                        ("revert".parse().unwrap(), Choice::default()),
+                        ("rm".parse().unwrap(), Choice::default()),
+                        ("shortlog".parse().unwrap(), Choice::default()),
+                        ("show".parse().unwrap(), Choice::default()),
+                        ("stash".parse().unwrap(), Choice::default()),
+                        ("status".parse().unwrap(), Choice::default()),
+                        ("submodule".parse().unwrap(), Choice::default()),
+                        ("tag".parse().unwrap(), Choice::default()),
+                        ("worktree".parse().unwrap(), Choice::default()),
+                        // Ancillary commands
+                        ("config".parse().unwrap(), Choice::default()),
+                        ("fast-export".parse().unwrap(), Choice::default()),
+                        ("fast-import".parse().unwrap(), Choice::default()),
+                        ("filter-branch".parse().unwrap(), Choice::default()),
+                        ("mergetool".parse().unwrap(), Choice::default()),
+                        ("pack-refs".parse().unwrap(), Choice::default()),
+                        ("prune".parse().unwrap(), Choice::default()),
+                        ("reflog".parse().unwrap(), Choice::default()),
+                        ("remote".parse().unwrap(), Choice::default()),
+                        ("repack".parse().unwrap(), Choice::default()),
+                        ("replace".parse().unwrap(), Choice::default()),
+                        // Interrogators
+                        ("annotate".parse().unwrap(), Choice::default()),
+                        ("blame".parse().unwrap(), Choice::default()),
+                        ("count-objects".parse().unwrap(), Choice::default()),
+                        ("difftool".parse().unwrap(), Choice::default()),
+                        ("fsck".parse().unwrap(), Choice::default()),
+                        ("help".parse().unwrap(), Choice::default()),
+                        ("instaweb".parse().unwrap(), Choice::default()),
+                        ("merge-tree".parse().unwrap(), Choice::default()),
+                        ("rerere".parse().unwrap(), Choice::default()),
+                        ("show-branch".parse().unwrap(), Choice::default()),
+                        ("verify-commit".parse().unwrap(), Choice::default()),
+                        ("verify-tag".parse().unwrap(), Choice::default()),
+                        ("whatchanged".parse().unwrap(), Choice::default()),
+                        // Interacting with others
+                        ("archimport".parse().unwrap(), Choice::default()),
+                        ("cvsexportcommit".parse().unwrap(), Choice::default()),
+                        ("cvsimport".parse().unwrap(), Choice::default()),
+                        ("cvsserver".parse().unwrap(), Choice::default()),
+                        ("imap-send".parse().unwrap(), Choice::default()),
+                        ("p4".parse().unwrap(), Choice::default()),
+                        ("quiltimport".parse().unwrap(), Choice::default()),
+                        ("request-pull".parse().unwrap(), Choice::default()),
+                        ("send-email".parse().unwrap(), Choice::default()),
+                        ("svn".parse().unwrap(), Choice::default()),
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
