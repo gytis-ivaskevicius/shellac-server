@@ -1,6 +1,7 @@
 use regex::Regex;
 use retain_mut::RetainMut;
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -20,9 +21,10 @@ pub enum Step {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Definition {
+pub struct Definition<'a> {
     steps: Vec<Step>,
     num_counters: u8,
+    definitions: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -43,8 +45,22 @@ impl PartialEq for Arg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Choice {
-    description: Option<String>,
-    sentinel: Option<String>, // TODO: better representation for sentinels
+    description: Option<usize>,
+    sentinel: Option<Sentinel>, // TODO: better representation for sentinels
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Sentinel {
+    counter: u8,
+    check: Option<(Ordering, u8)>,
+    assignment: Option<(Operator, u8)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Operator {
+    Inc,
+    Dec,
+    Set,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +78,7 @@ pub enum ChoiceResolver<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VMSearcher<'a> {
-    def: &'a Definition,
+    def: &'a Definition<'a>,
     stack: Vec<Searcher>,
     args: &'a AutocompRequest,
 }
@@ -181,7 +197,7 @@ impl Arg {
                     if captures.iter().filter_map(|x| x).any(|capture| {
                         self.choices
                             .keys()
-                            .any(|key| capture.as_str().starts_with(key.as_str()))
+                            .all(|key| capture.as_str().starts_with(key.as_str()))
                     }) {
                         results.push(test.clone());
                     }
@@ -330,6 +346,8 @@ impl<'a> VMSearcher<'a> {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &def.steps[completion as usize] {
                     check.resolve(&mut results, arg);
+                } else {
+                    unreachable!()
                 }
             }
         }
@@ -337,10 +355,11 @@ impl<'a> VMSearcher<'a> {
     }
 }
 
-impl Definition {
-    fn new<T: AsRef<str>>(_def: &T) -> Result<Self, regex::Error> {
+impl<'a> Definition<'a> {
+    fn new<T: AsRef<str> + 'a>(_def: &T) -> Result<Self, regex::Error> {
         Ok(Self {
             num_counters: 0,
+            definitions: Vec::new(),
             steps: vec![
                 Step::Split(11),
                 Step::Split(4),
