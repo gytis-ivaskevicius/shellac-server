@@ -28,6 +28,8 @@ pub struct Definition {
 #[derive(Debug, Clone, Default)]
 pub struct Arg {
     regex: Option<Regex>,
+    // TODO: Is this the best datastructure? Can we access variables directly? If not, maybe a
+    // simple vec with a binary search would be better
     choices: BTreeMap<ChoiceType, Choice>,
 }
 
@@ -65,7 +67,7 @@ pub struct VMSearcher<'a> {
     args: &'a AutocompRequest,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
 pub struct Searcher {
     counters: Vec<u8>,
     step: u8,
@@ -179,7 +181,7 @@ impl Arg {
                     if captures.iter().filter_map(|x| x).any(|capture| {
                         self.choices
                             .keys()
-                            .any(|key| key.as_str() == capture.as_str())
+                            .any(|key| capture.as_str().starts_with(key.as_str()))
                     }) {
                         results.push(test.clone());
                     }
@@ -251,8 +253,17 @@ impl<'a> VMSearcher<'a> {
                     let searcher = &mut self.stack[j];
 
                     match self.def.steps[searcher.step as usize] {
-                        Step::Jump(i) => searcher.step = i,
+                        Step::Jump(i) => {
+                            searcher.step = i;
+                            eprintln!(" === jump {} => {}", searcher.step, i);
+                        }
                         Step::Split(i) => {
+                            eprintln!(
+                                " === split {} => ({}, {})",
+                                searcher.step,
+                                i,
+                                searcher.step + 1
+                            );
                             let mut clone = searcher.clone();
                             clone.step = i;
                             searcher.step();
@@ -291,13 +302,17 @@ impl<'a> VMSearcher<'a> {
                                 && (if let Some(regex) = &arg_def.regex {
                                     regex.is_match(arg)
                                 } else {
-                                    true
+                                    arg_def
+                                        .choices
+                                        .keys()
+                                        .any(|choice| arg.starts_with(choice.as_str()))
                                 })
                         }
                         None | Some(Step::Match) => false,
                         _ => unreachable!(),
                     });
             }
+            eprintln!("\n\n========\n{:#?}\n=========\n\n", self.stack);
         }
 
         let VMSearcher {
@@ -308,8 +323,9 @@ impl<'a> VMSearcher<'a> {
         let arg = &args.argv()[args.word];
 
         let mut results = Vec::with_capacity(20);
-        stack.sort_unstable_by_key(|searcher| searcher.step);
-        stack.dedup_by_key(|searcher| searcher.step);
+        stack.sort_unstable_by_key(|searcher| searcher.completion);
+        stack.dedup_by_key(|searcher| searcher.completion);
+        eprintln!("==> {:#?}", stack);
         for searcher in stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &def.steps[completion as usize] {
@@ -326,12 +342,11 @@ impl Definition {
         Ok(Self {
             num_counters: 0,
             steps: vec![
-                Step::Split(9),
-                Step::Split(3),
+                Step::Split(11),
+                Step::Split(4),
                 Step::Check(Arg {
                     regex: Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
                     choices: vec![
-                        // TODO: -C <path> and -c <name>=<value>
                         ("version".parse().unwrap(), Choice::default()),
                         ("help".parse().unwrap(), Choice::default()),
                         ("exec-path".parse().unwrap(), Choice::default()),
@@ -353,7 +368,8 @@ impl Definition {
                     .into_iter()
                     .collect(),
                 }),
-                Step::Split(6),
+                Step::Jump(0),
+                Step::Split(8),
                 Step::Check(Arg {
                     regex: None,
                     choices: vec![("-C".parse().unwrap(), Choice::default())]
@@ -366,6 +382,7 @@ impl Definition {
                         .into_iter()
                         .collect(),
                 }),
+                Step::Jump(0),
                 Step::Check(Arg {
                     regex: None,
                     choices: vec![("-c".parse().unwrap(), Choice::default())]
