@@ -1,0 +1,157 @@
+# CLAP grammar (Command Line Argument Parse)
+
+**EARLY DRAFT STATE**
+
+## Introduction
+
+A significant part of what makes up completion functions is just lists of options with their descriptions. This duplicates the content of `--help` output and man pages. It needs to be maintained separately for bash, zsh, fish etc and is in a form that is specific to completion - it can't be used for syntax-highlighting, correction, look ahead prompts or whatever other features someone might imagine. It would also be better for this information to be maintained as part of the upstream project to avoid inaccuracies due to version skew.
+
+Where upstream projects do include completion functions, they sometimes write them for bash and only support zsh via the `bashcompinit` compatibility layer. This dumbs down zsh completion to the level of bash. Shell developers should have the freedom to innovate and come up with inventive new interactive features.
+
+Upstream projects are increasingly coming up with ways to provide shell completions via special options such as in the recent case of clang. The trouble with this is that every project handles this in a slightly different way making it a mess to configure them all. And often solutions are developed by people who don't have a lot of experience with completion or who make bash-centric assumptions.
+
+The idea here is to define a DSL for the description of the arguments, options and structure of command-line arguments for a particular command. These could be placed in text files under `/usr/share` and used by any shell, shell plugin or other program with an interest in them.
+
+## Format
+
+We want to specify a parse grammar but it needs to be augmented with additional information like descriptions and tags (which specify what is to be completed). We want it to be concise but powerful enough to handle nearly everything we might encounter on a command-line. While the details below might hint otherwise, it should not be necessary for descriptions to be a dense forest of regular expressions: most arguments are bounded by shell word boundaries and simple delimiters.
+
+Parsing goes left-right up to the cursor. And the set of possible states at this stage indicates things to be completed. Parsing should also proceed to the right of the cursor which might further limit the sets, mainly by manipulating sentinel values.
+
+The requirements are in some ways quite different to typical parsing problems such as for a compiler. We don't need all the tokens. An ambiguous parse is not a problem: for completion we have, by definition, an incomplete line. This rules out a PEG parser. A more likely approach is a initial level of recursion but bottom-up style pattern matching at a lower level.
+
+```
+{ … } blocks of alternatives (no alternation operator needed)
+<…>   delimits tags these correspond to groups of things that might be completed
+[…]   descriptions and headings
+/…/   regex for consumed characters
+(…)   sentinel conditions
+=>    concatenation (continuation in next argument)
+->    concatenation (splitting the current argument)
+$     named sequence (like <…> in BNF), can be scoped
+@     macro or function invocation, can also be scoped
+=     assign a sequence to a name, newline terminates but blocks and trailing operators allow continuation
+```
+
+Alternation is the default within `{…}` blocks, each alternative can only be passed once unless followed by `(*)`.
+
+The following is a sort of example to demonstrate usage
+
+```
+CLAP 0.0                              # declare grammar specification version
+command cmd = $args                   # define grammar for a command's arguments
+stdin cmd = $in                       # define grammar for redirection in
+stdout cmd = $out                     # define grammar for redirection out
+stderr cmd = $err                     # define grammar for stderr redirection
+envar VAR = $var                      # define grammar for environment variable value
+
+args = $opts => $arg1 => $arg2
+
+opts = {                              # define a named sequence
+  <options>:[option]
+  @optargs()
+  /-([a-z])|--([a-z\-]{2,})/                    # match and ignore unknown options
+  -f [option description]             # short option with description
+  { -l --long } [synonyms]
+  -r [repeatable option] (*)          # repeatable option
+  -v [verbose]          (*3)          # repeatable with maximum
+  -x [specify argument] (?0arg) => {  # option taking argument
+    <users>:[user] /.*/               # defer to shell's user completion
+  }
+  -y [desc] (!a)                      # option excluded by sentinel
+  { -o --opt } $sep =>
+  <options/actions>:[action option] (+a) # subgroup incrementing a sentinel
+  --do
+  --undo
+} (*)
+
+arg1 = {
+  @lowercase()                        # predefined function for mapping lower to upper
+  <arg>:[argument]:!"$arg --list-args"  # shell-command to list arguments:descriptions
+}
+
+arg2 = {
+  @partial(_)                         # predefined function so sn_ca matches snake_case
+  snake_case
+  joined_words
+}
+
+desc[de_DE] = "Hilfe ausgeben"        # TBD: mapping of localized descriptions
+import _file_                        # TBD: some form of inclusion, or import mechanism along with namespacing
+
+It therefore will need some sort of macro layer on top so that you can specify the specific form of the parser.
+### Sentinels
+This is the basis for specifying mutual exclusion between options.
+* `*` – allow many
+* `^` - exclusive (allow many but not duplicates)
+* `^list` - exclusive, sharing a dedup list between places.
+* `+o` – increment o counter
+* `-debug` – decrement debug counter
+* ?opt – require opt counter >0
+* !opt – require opt counter <=0
+* 0opt – zero counter
+* 1opt – set counter
+When the parser backtracks, it needs to revert changes to the counts. This is mainly notable because it doesn't happen with _regex_arguments. Finding a matching point should not prevent backtracking: if it is ambiguous we complete all cases.
+
+### Tags and Descriptions
+
+Common tags might be predefined, e.g.
+* options
+* processes
+* files
+* directories
+* users
+* hosts
+For common tags, you can elide the description. We'll need ways to provide options to certain tags like file extensions to be completed. Tags also come with predefined regexes for characters to be consumed.
+
+The grammar files also have the potential to allow for localization of descriptions.
+Zsh has conventions on how to represent default values and units. These could have explicit syntax.
+May also be useful to be able to tag the key verb in per-match descriptions. Sorting matches by it could be useful.
+
+### Macros: TBD
+
+Where common option parsing occurs, the same sections of grammar will end up being repeated. Applying the DRY principle and also a desire to keep specifications minimal looking. We need a way to reduce this. Some form of macros could serve this purpose.
+Macros could be implemented as part of a frontend to keep parse time minimal for the server. Frontends could take charge of generating syntax files and moving them to the appropriate folder.
+
+@optargs, loosely would be defined as
+/-.|--[^=$]*(=|$)/ (1arg)
+That sets arg if we've got
+parameters could vary this for different parser styles.
+```
+Zsh's `_arguments` handles the following command-line parser variantions, including:
+
+* -- terminates options (or not)
+* non-option argument terminates options (or not)
+* option packing: -abc for -a -b -c and -abc arg forms
+* -a arg -a=arg --aa arg --aa=arg
+* + options
+* optional arguments
+* multiple arguments to an option
+
+### Predefined Macros
+
+The following affect matching rules:
+* @quote(start,protected[,end])
+* @shell_quote() - nested level of shell quoting
+* @packed_options() - allow -abc to match -a -b -c
+* @uppercase() - lowercase matching uppercase
+* @lowercase() - uppercase matching lowercase
+* @map() - character equivalence classes
+* @partial() -  e.g. /u/l/b completing to /usr/local/bin
+* @initial() - initial characters that match nothing, e.g. initial zeroes on a number
+* @camel()   - partial matching of camel case (or some generalisation there-of)
+
+Common pattern constructs. E.g ip subcommands can be abbreviated. So for "table", we want ta(b(le?)?)?. Perhaps we can define a macro @abbrev(ta,ble) for this.
+
+### TBD: Aliases
+
+Aliases are both matches and, when encountered, are expanded when matching the line. backslash escapes like \a might use this along with subcommand aliases. Not yet sure of a syntax.
+Shell aliases should be handled within the shell. Since only the completed argument is returned, this should not add much overhead appart from shell expansion.
+
+### Regular Expressions
+
+Regex are full match by default. Simply add .* to match a subset. To allow argument grouping (i.e. tar -xvf), capture groups are used to find argument boundaries.
+
+## Plan
+
+The intention is to implement an initial prototype. In the short term, YAML can be used for description which allows the details and functionality to be refined before fixing the syntax of the DSL. The prototype would be in a form that would be usable as a plugin to existing shells or perhaps a Shellac server. Direct integration into other shells would only come later (and would need the code to be ported/rewritten in C or whatever).

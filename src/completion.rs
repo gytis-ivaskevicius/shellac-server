@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::Read;
+use std::process::Command;
+use std::process::Stdio;
 
 use super::AutocompRequest;
 use super::Error;
@@ -50,9 +52,10 @@ pub enum ChoiceType {
 }
 
 #[derive(Debug)]
-pub enum ChoiceResolver {
-    Literal(std::iter::Once<String>),
-    Reference(std::vec::IntoIter<String>),
+pub enum ChoiceResolver<T> {
+    Literal(std::iter::Once<T>),
+    Reference(std::vec::IntoIter<T>),
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +72,18 @@ pub struct Searcher {
     completion: Option<u8>,
 }
 
+impl<T> Iterator for ChoiceResolver<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ChoiceResolver::Literal(iter) => iter.next(),
+            ChoiceResolver::Reference(iter) => iter.next(),
+            ChoiceResolver::None => None,
+        }
+    }
+}
+
 impl ChoiceType {
     pub fn as_str(&self) -> &str {
         match self {
@@ -77,11 +92,44 @@ impl ChoiceType {
         }
     }
 
-    pub fn resolve(&self, prefix: &str) -> Option<String> {
+    pub fn resolve(&self, start: &str) -> ChoiceResolver<String> {
         match self {
-            ChoiceType::Literal(lit) if lit.starts_with(prefix) => Some(lit.to_string()),
-            ChoiceType::Reference(prefix, reference) => Some(format!("{}<{}>", prefix, reference)),
-            _ => None,
+            ChoiceType::Literal(lit) if lit.starts_with(start) => {
+                ChoiceResolver::Literal(std::iter::once(lit.to_string()))
+            }
+            ChoiceType::Reference(prefix, reference) => {
+                if prefix.starts_with(start) {
+                    ChoiceResolver::Literal(std::iter::once(prefix.to_string()))
+                } else if start.starts_with(prefix) {
+                    if reference == "file" {
+                        let file_start = start.trim_start_matches(prefix);
+                        let out = Command::new("ls")
+                            .arg("-1")
+                            .stdout(Stdio::piped())
+                            .spawn()
+                            .unwrap()
+                            .wait_with_output()
+                            .unwrap();
+                        ChoiceResolver::Reference(
+                            String::from_utf8(out.stdout)
+                                .unwrap()
+                                .lines()
+                                .filter(|line| line.starts_with(file_start))
+                                .map(|line| format!("{}{}", prefix, line))
+                                .collect::<Vec<_>>()
+                                .into_iter(),
+                        )
+                    } else {
+                        ChoiceResolver::Literal(std::iter::once(format!(
+                            "{}<{}>",
+                            prefix, reference
+                        )))
+                    }
+                } else {
+                    ChoiceResolver::None
+                }
+            }
+            _ => ChoiceResolver::None,
         }
     }
 }
@@ -128,12 +176,10 @@ impl Arg {
 
                 // TODO: this does not check all capture groups
                 if let Some(captures) = regex.captures(&test) {
-                    if captures.iter().any(|capture| {
-                        capture.map_or(false, |capture| {
-                            self.choices
-                                .keys()
-                                .any(|key| key.as_str() == capture.as_str())
-                        })
+                    if captures.iter().filter_map(|x| x).any(|capture| {
+                        self.choices
+                            .keys()
+                            .any(|key| key.as_str() == capture.as_str())
                     }) {
                         results.push(test.clone());
                     }
@@ -162,7 +208,7 @@ impl Arg {
                 }));
             }
         } else {
-            results.extend(self.choices.keys().filter_map(|choice| choice.resolve(arg)))
+            results.extend(self.choices.keys().flat_map(|choice| choice.resolve(arg)))
         }
     }
 }
