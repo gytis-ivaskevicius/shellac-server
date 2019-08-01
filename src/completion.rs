@@ -22,9 +22,9 @@ pub enum Step {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition<'a> {
-    steps: Vec<Step>,
-    num_counters: u8,
-    definitions: Vec<&'a str>,
+    pub steps: Vec<Step>,
+    pub num_counters: u8,
+    pub descriptions: Vec<&'a str>, // A HashMap is clearer, but a vec is faster
 }
 
 #[derive(Debug, Clone, Default)]
@@ -304,9 +304,7 @@ impl<'a> VMSearcher<'a> {
                     let searcher = &mut self.stack[j];
 
                     match self.def.steps[searcher.step as usize] {
-                        Step::Jump(i) => {
-                            searcher.step = i;
-                        }
+                        Step::Jump(i) => searcher.step = i,
                         Step::Split(i) => {
                             let mut clone = searcher.clone();
                             clone.step = i;
@@ -404,7 +402,7 @@ impl<'a> Definition<'a> {
     fn new<T: AsRef<str> + 'a>(_def: &T) -> Result<Self, regex::Error> {
         Ok(Self {
             num_counters: 1,
-            definitions: Vec::new(),
+            descriptions: Vec::new(),
             steps: vec![
                 Step::Split(11),
                 Step::Split(4),
@@ -592,6 +590,7 @@ impl Completer {
 
         self.file.read_to_string(&mut content)?;
 
+        // let def: super::parser::Definition = serde_yaml::from_str(&content).unwrap();
         let def = Definition::new(&content.trim()).unwrap();
         Ok(super::Result {
             choices: VMSearcher::new(&def, &self.request).choices().unwrap(),
