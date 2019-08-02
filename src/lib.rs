@@ -3,7 +3,7 @@
 pub mod codec;
 pub mod completion;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
 use std::string::FromUtf8Error;
@@ -54,7 +54,7 @@ impl fmt::Display for Error {
     }
 }
 
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutocompRequest {
     argv: Vec<String>,
     word: usize,

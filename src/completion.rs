@@ -152,6 +152,14 @@ impl ChoiceType {
     }
 }
 
+impl Choice {
+    pub fn check(&self, counters: &[u8]) -> bool {
+        self.sentinel.as_ref().map_or(true, |sentinel| {
+            sentinel.check(counters[sentinel.counter as usize])
+        })
+    }
+}
+
 impl std::str::FromStr for ChoiceType {
     type Err = ();
 
@@ -183,12 +191,12 @@ impl std::cmp::PartialOrd for ChoiceType {
 }
 
 impl Arg {
-    pub fn resolve(&self, results: &mut Vec<String>, arg: &str) {
+    pub fn resolve(&self, results: &mut Vec<String>, arg: &str, counters: &[u8]) {
         if let Some(regex) = &self.regex {
             let len = arg.len();
             let mut test = arg.to_string();
 
-            for option in self.choices.keys() {
+            for (option, _) in self.choices.iter().filter(|(_, desc)| desc.check(counters)) {
                 test.truncate(len);
                 test.push_str(option.as_str());
 
@@ -197,7 +205,7 @@ impl Arg {
                     if captures.iter().filter_map(|x| x).any(|capture| {
                         self.choices
                             .keys()
-                            .all(|key| capture.as_str().starts_with(key.as_str()))
+                            .any(|key| capture.as_str().starts_with(key.as_str()))
                     }) {
                         results.push(test.clone());
                     }
@@ -226,7 +234,34 @@ impl Arg {
                 }));
             }
         } else {
-            results.extend(self.choices.keys().flat_map(|choice| choice.resolve(arg)))
+            results.extend(
+                self.choices
+                    .iter()
+                    .filter(|(_, desc)| desc.check(counters))
+                    .flat_map(|(choice, _)| choice.resolve(arg)),
+            )
+        }
+    }
+}
+
+impl Sentinel {
+    pub fn check(&self, counter: u8) -> bool {
+        self.check
+            .map_or(true, |(test, value)| counter.cmp(&value) == test)
+    }
+
+    pub fn check_and_update(&self, counter: &mut u8) -> bool {
+        if self.check(*counter) {
+            if let Some((op, value)) = &self.assignment {
+                match op {
+                    Operator::Dec => *counter -= value,
+                    Operator::Inc => *counter += value,
+                    Operator::Set => *counter = *value,
+                }
+            }
+            true
+        } else {
+            false
         }
     }
 }
@@ -314,15 +349,34 @@ impl<'a> VMSearcher<'a> {
                     .retain_mut(|searcher| match def.steps.get(searcher.step as usize) {
                         Some(Step::Check(ref arg_def)) => {
                             searcher.step();
-                            (searcher.step as usize) < def.steps.len()
-                                && (if let Some(regex) = &arg_def.regex {
-                                    regex.is_match(arg)
+                            if let Some(regex) = &arg_def.regex {
+                                if let Some(captures) = regex.captures(arg) {
+                                    for capture in captures.iter().filter_map(|x| x) {
+                                        for (choice, desc) in &arg_def.choices {
+                                            if capture.as_str().starts_with(choice.as_str()) {
+                                                if let Some(sentinel) = &desc.sentinel {
+                                                    sentinel.check_and_update(
+                                                        &mut searcher.counters
+                                                            [sentinel.counter as usize],
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    true
                                 } else {
-                                    arg_def
-                                        .choices
-                                        .keys()
-                                        .any(|choice| arg.starts_with(choice.as_str()))
+                                    false
+                                }
+                            } else {
+                                arg_def.choices.iter().any(|(choice, desc)| {
+                                    arg.starts_with(choice.as_str())
+                                        && desc.sentinel.as_ref().map_or(true, |sentinel| {
+                                            sentinel.check_and_update(
+                                                &mut searcher.counters[sentinel.counter as usize],
+                                            )
+                                        })
                                 })
+                            }
                         }
                         None | Some(Step::Match) => false,
                         _ => unreachable!(),
@@ -345,7 +399,7 @@ impl<'a> VMSearcher<'a> {
         for searcher in stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &def.steps[completion as usize] {
-                    check.resolve(&mut results, arg);
+                    check.resolve(&mut results, arg, &searcher.counters);
                 } else {
                     unreachable!()
                 }
@@ -358,7 +412,7 @@ impl<'a> VMSearcher<'a> {
 impl<'a> Definition<'a> {
     fn new<T: AsRef<str> + 'a>(_def: &T) -> Result<Self, regex::Error> {
         Ok(Self {
-            num_counters: 0,
+            num_counters: 1,
             definitions: Vec::new(),
             steps: vec![
                 Step::Split(11),
@@ -373,7 +427,17 @@ impl<'a> Definition<'a> {
                         ("html-path".parse().unwrap(), Choice::default()),
                         ("man-path".parse().unwrap(), Choice::default()),
                         ("info-path".parse().unwrap(), Choice::default()),
-                        ("p".parse().unwrap(), Choice::default()),
+                        (
+                            "p".parse().unwrap(),
+                            Choice {
+                                description: None,
+                                sentinel: Some(Sentinel {
+                                    counter: 0,
+                                    check: Some((Ordering::Equal, 0)),
+                                    assignment: Some((Operator::Set, 1)),
+                                }),
+                            },
+                        ),
                         ("paginate".parse().unwrap(), Choice::default()),
                         ("P".parse().unwrap(), Choice::default()),
                         ("no-pager".parse().unwrap(), Choice::default()),

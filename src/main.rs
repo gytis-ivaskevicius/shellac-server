@@ -1,4 +1,4 @@
-use shellac_server::{codec::ArgvCodec, completion};
+use shellac_server::{codec::ArgvCodec, completion, AutocompRequest};
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -6,6 +6,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::thread;
 
+use serde_json::Deserializer;
 use structopt::StructOpt;
 
 /// A Shell Agnostic Completion server
@@ -45,14 +46,17 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
     use std::time::Instant;
 
     let mut writer = BufWriter::new(writer);
-    let mut codec = ArgvCodec::new(BufReader::new(reader));
-    while let Some(request) = codec.decode()? {
+    // let mut codec = ArgvCodec::new(BufReader::new(reader));
+    // while let Some(request) = codec.decode()? {
+    for request in Deserializer::from_reader(BufReader::new(reader)).into_iter::<AutocompRequest>()
+    {
+        let request = request.unwrap();
         let start = Instant::now();
         let path = get_comp_file(&request.argv()[0])?;
         let file = File::open(path)?;
         let completed = completion::complete(file, request)?;
         let duration = start.elapsed();
-        serde_json::to_writer(&mut writer, &completed);
+        serde_json::to_writer(&mut writer, &completed).unwrap();
         eprintln!("Time elapsed: {:?}", duration);
     }
     Ok(())
