@@ -306,15 +306,8 @@ impl<'a> VMSearcher<'a> {
                     match self.def.steps[searcher.step as usize] {
                         Step::Jump(i) => {
                             searcher.step = i;
-                            eprintln!(" === jump {} => {}", searcher.step, i);
                         }
                         Step::Split(i) => {
-                            eprintln!(
-                                " === split {} => ({}, {})",
-                                searcher.step,
-                                i,
-                                searcher.step + 1
-                            );
                             let mut clone = searcher.clone();
                             clone.step = i;
                             searcher.step();
@@ -382,7 +375,6 @@ impl<'a> VMSearcher<'a> {
                         _ => unreachable!(),
                     });
             }
-            eprintln!("\n\n========\n{:#?}\n=========\n\n", self.stack);
         }
 
         let VMSearcher {
@@ -395,7 +387,6 @@ impl<'a> VMSearcher<'a> {
         let mut results = Vec::with_capacity(20);
         stack.sort_unstable_by_key(|searcher| searcher.completion);
         stack.dedup_by_key(|searcher| searcher.completion);
-        eprintln!("==> {:#?}", stack);
         for searcher in stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &def.steps[completion as usize] {
