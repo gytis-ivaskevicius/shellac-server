@@ -3,9 +3,6 @@ use retain_mut::RetainMut;
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::BufReader;
-use std::io::Read;
 use std::process::Command;
 use std::process::Stdio;
 
@@ -21,10 +18,10 @@ pub enum Step {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Definition<'a> {
+pub struct Definition {
     pub steps: Vec<Step>,
     pub num_counters: u8,
-    pub descriptions: Vec<&'a str>, // A HashMap is clearer, but a vec is faster
+    pub descriptions: Vec<BTreeMap<String, String>>, // A HashMap is clearer, but a vec is faster
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,7 +75,7 @@ pub enum ChoiceResolver<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VMSearcher<'a> {
-    def: &'a Definition<'a>,
+    def: &'a Definition,
     stack: Vec<Searcher>,
     args: &'a AutocompRequest,
 }
@@ -191,6 +188,10 @@ impl std::cmp::PartialOrd for ChoiceType {
 }
 
 impl Arg {
+    pub const fn new(regex: Option<Regex>, choices: BTreeMap<ChoiceType, Choice>) -> Self {
+        Self { regex, choices }
+    }
+
     pub fn resolve(&self, results: &mut Vec<String>, arg: &str, counters: &[u8]) {
         if let Some(regex) = &self.regex {
             let len = arg.len();
@@ -281,7 +282,7 @@ impl Searcher {
 }
 
 impl<'a> VMSearcher<'a> {
-    fn new(def: &'a Definition, args: &'a AutocompRequest) -> Self {
+    pub fn new(def: &'a Definition, args: &'a AutocompRequest) -> Self {
         Self {
             def,
             stack: vec![Searcher::new(def.num_counters, 0)],
@@ -289,7 +290,7 @@ impl<'a> VMSearcher<'a> {
         }
     }
 
-    fn choices(mut self) -> Result<Vec<String>, Error> {
+    pub fn choices(mut self) -> Result<Vec<String>, Error> {
         for (i, arg) in self.args.argv().iter().enumerate().skip(1) {
             // Advance to the next argument
             while self.stack.iter().any(|searcher| {
@@ -398,8 +399,8 @@ impl<'a> VMSearcher<'a> {
     }
 }
 
-impl<'a> Definition<'a> {
-    fn new<T: AsRef<str> + 'a>(_def: &T) -> Result<Self, regex::Error> {
+impl Definition {
+    pub fn new<T: AsRef<str>>(_def: &T) -> Result<Self, regex::Error> {
         Ok(Self {
             num_counters: 1,
             descriptions: Vec::new(),
@@ -564,36 +565,6 @@ impl<'a> Definition<'a> {
                 }),
                 Step::Match,
             ],
-        })
-    }
-}
-
-pub struct Completer {
-    file: BufReader<File>,
-    request: AutocompRequest,
-}
-
-pub fn complete(file: File, request: AutocompRequest) -> Result<super::Result, Error> {
-    Completer::new(file, request).complete()
-}
-
-impl Completer {
-    pub fn new(file: File, request: AutocompRequest) -> Self {
-        Self {
-            request,
-            file: BufReader::new(file),
-        }
-    }
-
-    pub fn complete(mut self) -> Result<super::Result, Error> {
-        let mut content = String::with_capacity(1024);
-
-        self.file.read_to_string(&mut content)?;
-
-        // let def: super::parser::Definition = serde_yaml::from_str(&content).unwrap();
-        let def = Definition::new(&content.trim()).unwrap();
-        Ok(super::Result {
-            choices: VMSearcher::new(&def, &self.request).choices().unwrap(),
         })
     }
 }

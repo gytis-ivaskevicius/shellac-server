@@ -1,5 +1,9 @@
-use shellac_server::{codec::ArgvCodec, completion, AutocompRequest};
+use shellac_server::{
+    completion::{Definition, VMSearcher},
+    parser, AutocompRequest,
+};
 
+use std::convert::TryInto;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::net::UnixListener;
@@ -53,10 +57,20 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
         let request = request.unwrap();
         let start = Instant::now();
         let path = get_comp_file(&request.argv()[0])?;
-        let file = File::open(path)?;
-        let completed = completion::complete(file, request)?;
+
+        let mut file = File::open(path)?;
+        let mut content = String::with_capacity(1024);
+        file.read_to_string(&mut content)?;
+
+        let def: Definition = serde_yaml::from_str::<parser::Definition>(&content)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        eprintln!("{:#?}", def);
+        let def = Definition::new(&content.trim()).unwrap();
+        let choices = VMSearcher::new(&def, &request).choices().unwrap();
         let duration = start.elapsed();
-        serde_json::to_writer(&mut writer, &completed).unwrap();
+        serde_json::to_writer(&mut writer, &choices).unwrap();
         eprintln!("Time elapsed: {:?}", duration);
     }
     Ok(())
