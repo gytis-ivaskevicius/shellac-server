@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use combine::{char::*, stream::state::State, *};
+use combine::{char::*, range::*, stream::state::State, *};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -27,9 +27,10 @@ struct Choice {
 }
 
 parser! {
-    fn sequences[I]()(I) -> Vec<Vec<Argument>>
+    fn sequences[I]()(I) -> Vec<Vec<Argument<I::Range>>>
     where [
-        I: Stream<Item = char>,
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + Default,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
         sep_by1(sequence(), string("|"))
@@ -37,19 +38,21 @@ parser! {
 }
 
 parser! {
-    fn sequence[I]()(I) -> Vec<Argument>
+    fn sequence[I]()(I) -> Vec<Argument<I::Range>>
     where [
-        I: Stream<Item = char>,
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + Default,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
-        sep_by1(argument(), string("=>"))
+        sep_by1(argument(), string(" "))
     }
 }
 
 parser! {
-    fn argument[I]()(I) -> Argument
+    fn argument[I]()(I) -> Argument<I::Range>
     where [
-        I: Stream<Item = char>,
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + Default,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
         between(spaces(), spaces(), choice(
@@ -59,7 +62,7 @@ parser! {
                     optional(word()),
                     between(char('<'), char('>'), word())
                 ))
-                    .map(|(prefix, reference)| Argument::Reference(prefix.unwrap_or_else(String::new), reference)),
+                    .map(|(prefix, reference)| Argument::Reference(prefix.unwrap_or_else(I::Range::default), reference)),
                 word().map(Argument::Literal)
             )
         ))
@@ -67,20 +70,21 @@ parser! {
 }
 
 parser! {
-    fn word[I]()(I) -> String
+    fn word[I]()(I) -> I::Range
     where [
-        I: Stream<Item = char>,
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
-        many1(letter().or(char('-')).or(char('=')).or(char('/')))
+        take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/')
     }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-enum Argument {
-    Literal(String),
-    Reference(String, String),
-    Definition(String),
+enum Argument<T> {
+    Literal(T),
+    Reference(T, T),
+    Definition(T),
 }
 
 impl std::convert::TryFrom<Definition> for super::completion::Definition {
@@ -116,5 +120,53 @@ impl std::convert::TryFrom<Arg> for super::completion::Arg {
             arg.regex.map(|regex| Regex::new(&regex)).transpose()?,
             BTreeMap::default(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_word() {
+        assert_eq!(Ok(("ab/=--", "")), word().easy_parse("ab/=--"));
+    }
+
+    #[test]
+    fn test_argument() {
+        assert_eq!(
+            Ok((Argument::Literal("ab/=--"), "")),
+            argument().easy_parse("ab/=--")
+        );
+    }
+
+    #[test]
+    fn test_sequence() {
+        assert_eq!(
+            Ok((
+                vec![Argument::Literal("ab/=--"), Argument::Definition("alfred")],
+                ""
+            )),
+            sequence().easy_parse("     ab/=--        => $alfred")
+        );
+    }
+
+    #[test]
+    fn test_sequences() {
+        assert_eq!(
+            Ok((
+                vec![
+                    vec![
+                        Argument::Literal("--/bob="),
+                        Argument::Definition("alpha"),
+                        Argument::Literal("bob"),
+                        Argument::Reference("sauce=", "alfred"),
+                    ],
+                    vec![Argument::Literal("a"), Argument::Literal("alfred")]
+                ],
+                ""
+            )),
+            sequences().easy_parse("--/bob=  =>   $alpha => bob   => sauce=<alfred> | a => alfred")
+        );
     }
 }
