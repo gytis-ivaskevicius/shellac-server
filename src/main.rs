@@ -62,7 +62,7 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
         let mut content = String::with_capacity(1024);
         file.read_to_string(&mut content)?;
 
-        let def: Definition = serde_yaml::from_str::<parser::Definition>(&content)
+        let def: Definition<String> = serde_yaml::from_str::<parser::Definition>(&content)
             .unwrap()
             .try_into()
             .unwrap();

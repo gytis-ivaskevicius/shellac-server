@@ -1,40 +1,41 @@
 use regex::Regex;
 use retain_mut::RetainMut;
 
-use std::cmp::Ordering;
+use std::cmp::{Ord, Ordering, PartialOrd};
 use std::collections::BTreeMap;
-use std::process::Command;
-use std::process::Stdio;
+use std::convert::TryInto;
+// use std::process::Command;
+// use std::process::Stdio;
 
 use super::AutocompRequest;
 use super::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
-    Check(Arg),
+pub enum Step<T: Ord> {
+    Check(Arg<T>),
     Jump(u8),
     Split(u8),
     Match,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Definition {
-    pub steps: Vec<Step>,
+pub struct Definition<T: Ord> {
+    pub steps: Vec<Step<T>>,
     pub num_counters: u8,
     pub descriptions: Vec<BTreeMap<String, String>>, // A HashMap is clearer, but a vec is faster
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Arg {
+pub struct Arg<T: Ord> {
     regex: Option<Regex>,
     // TODO: Is this the best datastructure? Can we access variables directly? If not, maybe a
     // simple vec with a binary search would be better
-    choices: BTreeMap<ChoiceType, Choice>,
+    choices: BTreeMap<Argument<T>, Choice>,
 }
 
-impl Eq for Arg {}
+impl<T: Eq + Ord> Eq for Arg<T> {}
 
-impl PartialEq for Arg {
+impl<T: PartialEq + Ord> PartialEq for Arg<T> {
     fn eq(&self, other: &Self) -> bool {
         self.choices.eq(&other.choices)
     }
@@ -42,8 +43,8 @@ impl PartialEq for Arg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Choice {
-    description: Option<usize>,
-    sentinel: Option<Sentinel>,
+    pub description: Option<usize>,
+    pub sentinel: Option<Sentinel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -60,10 +61,10 @@ pub enum Operator {
     Set,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChoiceType {
-    Literal(String),
-    Reference(String, String),
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Argument<T> {
+    literal: T,
+    reference: Option<Vec<(T, T)>>,
 }
 
 #[derive(Debug)]
@@ -74,8 +75,8 @@ pub enum ChoiceResolver<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VMSearcher<'a> {
-    def: &'a Definition,
+pub struct VMSearcher<'a, T: Ord> {
+    def: &'a Definition<T>,
     stack: Vec<Searcher>,
     args: &'a AutocompRequest,
 }
@@ -99,25 +100,41 @@ impl<T> Iterator for ChoiceResolver<T> {
     }
 }
 
-impl ChoiceType {
-    pub fn as_str(&self) -> &str {
-        match self {
-            ChoiceType::Literal(lit) => lit,
-            ChoiceType::Reference(prefix, _) => prefix,
-        }
+impl<T> Argument<T> {
+    pub const fn literal(&self) -> &T {
+        &self.literal
     }
 
+    pub const fn new(literal: T, reference: Option<Vec<(T, T)>>) -> Self {
+        Self { literal, reference }
+    }
+}
+
+impl<'a> Argument<&'a str> {
+    pub fn to_owned(&self) -> Argument<String> {
+        Argument {
+            literal: self.literal.to_owned(),
+            reference: self.reference.as_ref().map(|refs| {
+                refs.iter()
+                    .map(|(r, f)| (r.to_string(), f.to_string()))
+                    .collect()
+            }),
+        }
+    }
+}
+
+impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
     pub fn resolve(&self, start: &str) -> ChoiceResolver<String> {
-        match self {
-            ChoiceType::Literal(lit) if lit.starts_with(start) => {
-                ChoiceResolver::Literal(std::iter::once(lit.to_string()))
+        match &self.reference {
+            None if self.literal.as_ref().starts_with(start) => {
+                ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
             }
-            ChoiceType::Reference(prefix, reference) => {
-                if prefix.starts_with(start) {
-                    ChoiceResolver::Literal(std::iter::once(prefix.to_string()))
-                } else if start.starts_with(prefix) {
-                    if reference == "file" {
-                        let file_start = start.trim_start_matches(prefix);
+            Some(reference) => {
+                if self.literal.as_ref().starts_with(start) {
+                    ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
+                } else if start.starts_with(self.literal.as_ref()) {
+                    /* if reference == "file" {
+                        let file_start = start.trim_start_matches(self.literal);
                         let out = Command::new("ls")
                             .arg("-1")
                             .stdout(Stdio::piped())
@@ -134,12 +151,13 @@ impl ChoiceType {
                                 .collect::<Vec<_>>()
                                 .into_iter(),
                         )
-                    } else {
-                        ChoiceResolver::Literal(std::iter::once(format!(
-                            "{}<{}>",
-                            prefix, reference
-                        )))
-                    }
+                    } else { */
+                    ChoiceResolver::Literal(std::iter::once(format!(
+                        "{}<{:?}>",
+                        self.literal.as_ref(),
+                        reference
+                    )))
+                // }
                 } else {
                     ChoiceResolver::None
                 }
@@ -157,41 +175,25 @@ impl Choice {
     }
 }
 
-impl std::str::FromStr for ChoiceType {
-    type Err = ();
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let mut parts = input.splitn(2, '<');
-        let start = parts.next().unwrap();
-        if let Some(desc) = parts.next() {
-            let (desc, end) = desc.split_at(desc.len() - 1);
-            if end == ">" {
-                Ok(ChoiceType::Reference(start.into(), desc.into()))
-            } else {
-                Err(())
-            }
-        } else {
-            Ok(ChoiceType::Literal(input.into()))
-        }
-    }
-}
-
-impl std::cmp::Ord for ChoiceType {
+impl<T: Ord> Ord for Argument<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(other.as_str())
-    }
-}
-impl std::cmp::PartialOrd for ChoiceType {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.as_str().partial_cmp(other.as_str())
+        self.literal().cmp(other.literal())
     }
 }
 
-impl Arg {
-    pub const fn new(regex: Option<Regex>, choices: BTreeMap<ChoiceType, Choice>) -> Self {
+impl<T: PartialOrd> PartialOrd for Argument<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.literal().partial_cmp(other.literal())
+    }
+}
+
+impl<T: Ord> Arg<T> {
+    pub fn new(regex: Option<Regex>, choices: BTreeMap<Argument<T>, Choice>) -> Self {
         Self { regex, choices }
     }
+}
 
+impl<T: Ord + AsRef<str> + std::fmt::Debug + ToString> Arg<T> {
     pub fn resolve(&self, results: &mut Vec<String>, arg: &str, counters: &[u8]) {
         if let Some(regex) = &self.regex {
             let len = arg.len();
@@ -199,14 +201,14 @@ impl Arg {
 
             for (option, _) in self.choices.iter().filter(|(_, desc)| desc.check(counters)) {
                 test.truncate(len);
-                test.push_str(option.as_str());
+                test.push_str(option.literal().as_ref());
 
                 // TODO: this does not check all capture groups
                 if let Some(captures) = regex.captures(&test) {
                     if captures.iter().filter_map(|x| x).any(|capture| {
                         self.choices
                             .keys()
-                            .any(|key| capture.as_str().starts_with(key.as_str()))
+                            .any(|key| capture.as_str().starts_with(key.literal().as_ref()))
                     }) {
                         results.push(test.clone());
                     }
@@ -221,12 +223,12 @@ impl Arg {
                     if let Some(choice) = self
                         .choices
                         .keys()
-                        .find(|option| option.as_str().starts_with(capture.as_str()))
+                        .find(|option| option.literal().as_ref().starts_with(capture.as_str()))
                     {
                         Some(format!(
                             "{}{}{}",
                             &arg[..capture.start()],
-                            choice.as_str(),
+                            choice.literal().as_ref(),
                             &arg[capture.end()..]
                         ))
                     } else {
@@ -246,7 +248,7 @@ impl Arg {
 }
 
 impl Sentinel {
-    pub fn new(
+    pub const fn new(
         counter: u8,
         check: Option<(Ordering, u8)>,
         assignment: Option<(Operator, u8)>,
@@ -293,8 +295,8 @@ impl Searcher {
     }
 }
 
-impl<'a> VMSearcher<'a> {
-    pub fn new(def: &'a Definition, args: &'a AutocompRequest) -> Self {
+impl<'a, T: ToString + std::fmt::Debug + AsRef<str> + Ord> VMSearcher<'a, T> {
+    pub fn new(def: &'a Definition<T>, args: &'a AutocompRequest) -> Self {
         Self {
             def,
             stack: vec![Searcher::new(def.num_counters, 0)],
@@ -357,7 +359,10 @@ impl<'a> VMSearcher<'a> {
                                 if let Some(captures) = regex.captures(arg) {
                                     for capture in captures.iter().filter_map(|x| x) {
                                         for (choice, desc) in &arg_def.choices {
-                                            if capture.as_str().starts_with(choice.as_str()) {
+                                            if capture
+                                                .as_str()
+                                                .starts_with(choice.literal().as_ref())
+                                            {
                                                 if let Some(sentinel) = &desc.sentinel {
                                                     sentinel.check_and_update(
                                                         &mut searcher.counters
@@ -373,7 +378,7 @@ impl<'a> VMSearcher<'a> {
                                 }
                             } else {
                                 arg_def.choices.iter().any(|(choice, desc)| {
-                                    arg.starts_with(choice.as_str())
+                                    arg.starts_with(choice.literal().as_ref())
                                         && desc.sentinel.as_ref().map_or(true, |sentinel| {
                                             sentinel.check_and_update(
                                                 &mut searcher.counters[sentinel.counter as usize],
@@ -411,8 +416,8 @@ impl<'a> VMSearcher<'a> {
     }
 }
 
-impl Definition {
-    pub fn new<T: AsRef<str>>(_def: &T) -> Result<Self, regex::Error> {
+impl<'a> Definition<&'a str> {
+    pub fn new<S: AsRef<str>>(_def: &S) -> Result<Self, regex::Error> {
         Ok(Self {
             num_counters: 1,
             descriptions: Vec::new(),
@@ -422,15 +427,15 @@ impl Definition {
                 Step::Check(Arg {
                     regex: Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
                     choices: vec![
-                        ("version".parse().unwrap(), Choice::default()),
-                        ("help".parse().unwrap(), Choice::default()),
-                        ("exec-path".parse().unwrap(), Choice::default()),
-                        ("exec-path=<file>".parse().unwrap(), Choice::default()),
-                        ("html-path".parse().unwrap(), Choice::default()),
-                        ("man-path".parse().unwrap(), Choice::default()),
-                        ("info-path".parse().unwrap(), Choice::default()),
+                        ("version".try_into().unwrap(), Choice::default()),
+                        ("help".try_into().unwrap(), Choice::default()),
+                        ("exec-path".try_into().unwrap(), Choice::default()),
+                        ("exec-path=<file>".try_into().unwrap(), Choice::default()),
+                        ("html-path".try_into().unwrap(), Choice::default()),
+                        ("man-path".try_into().unwrap(), Choice::default()),
+                        ("info-path".try_into().unwrap(), Choice::default()),
                         (
-                            "p".parse().unwrap(),
+                            "p".try_into().unwrap(),
                             Choice {
                                 description: None,
                                 sentinel: Some(Sentinel {
@@ -440,15 +445,15 @@ impl Definition {
                                 }),
                             },
                         ),
-                        ("paginate".parse().unwrap(), Choice::default()),
-                        ("P".parse().unwrap(), Choice::default()),
-                        ("no-pager".parse().unwrap(), Choice::default()),
-                        ("no-replace-objects".parse().unwrap(), Choice::default()),
-                        ("bare".parse().unwrap(), Choice::default()),
-                        ("git-dir=<file>".parse().unwrap(), Choice::default()),
-                        ("work-tree=<file>".parse().unwrap(), Choice::default()),
-                        ("namespace=<file>".parse().unwrap(), Choice::default()),
-                        ("super-prefix=<file>".parse().unwrap(), Choice::default()),
+                        ("paginate".try_into().unwrap(), Choice::default()),
+                        ("P".try_into().unwrap(), Choice::default()),
+                        ("no-pager".try_into().unwrap(), Choice::default()),
+                        ("no-replace-objects".try_into().unwrap(), Choice::default()),
+                        ("bare".try_into().unwrap(), Choice::default()),
+                        ("git-dir=<file>".try_into().unwrap(), Choice::default()),
+                        ("work-tree=<file>".try_into().unwrap(), Choice::default()),
+                        ("namespace=<file>".try_into().unwrap(), Choice::default()),
+                        ("super-prefix=<file>".try_into().unwrap(), Choice::default()),
                     ]
                     .into_iter()
                     .collect(),
@@ -457,26 +462,26 @@ impl Definition {
                 Step::Split(8),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("-C".parse().unwrap(), Choice::default())]
+                    choices: vec![("-C".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("<file>".parse().unwrap(), Choice::default())]
+                    choices: vec![("<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Jump(0),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("-c".parse().unwrap(), Choice::default())]
+                    choices: vec![("-c".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("<name>=<file>".parse().unwrap(), Choice::default())]
+                    choices: vec![("<name>=<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
@@ -484,94 +489,94 @@ impl Definition {
                 Step::Check(Arg {
                     regex: None,
                     choices: vec![
-                        ("add".parse().unwrap(), Choice::default()),
-                        ("am".parse().unwrap(), Choice::default()),
-                        ("archive".parse().unwrap(), Choice::default()),
-                        ("bisect".parse().unwrap(), Choice::default()),
-                        ("branch".parse().unwrap(), Choice::default()),
-                        ("bundle".parse().unwrap(), Choice::default()),
-                        ("checkout".parse().unwrap(), Choice::default()),
-                        ("cherry-pick".parse().unwrap(), Choice::default()),
-                        ("citool".parse().unwrap(), Choice::default()),
-                        ("clean".parse().unwrap(), Choice::default()),
-                        ("clone".parse().unwrap(), Choice::default()),
-                        ("commit".parse().unwrap(), Choice::default()),
-                        ("describe".parse().unwrap(), Choice::default()),
-                        ("diff".parse().unwrap(), Choice::default()),
-                        ("fetch".parse().unwrap(), Choice::default()),
-                        ("format-patch".parse().unwrap(), Choice::default()),
-                        ("gc".parse().unwrap(), Choice::default()),
-                        ("grep".parse().unwrap(), Choice::default()),
-                        ("gui".parse().unwrap(), Choice::default()),
-                        ("init".parse().unwrap(), Choice::default()),
-                        ("log".parse().unwrap(), Choice::default()),
-                        ("merge".parse().unwrap(), Choice::default()),
-                        ("mv".parse().unwrap(), Choice::default()),
-                        ("notes".parse().unwrap(), Choice::default()),
-                        ("pull".parse().unwrap(), Choice::default()),
-                        ("push".parse().unwrap(), Choice::default()),
-                        ("range-diff".parse().unwrap(), Choice::default()),
-                        ("rebase".parse().unwrap(), Choice::default()),
-                        ("reset".parse().unwrap(), Choice::default()),
-                        ("revert".parse().unwrap(), Choice::default()),
-                        ("rm".parse().unwrap(), Choice::default()),
-                        ("shortlog".parse().unwrap(), Choice::default()),
-                        ("show".parse().unwrap(), Choice::default()),
-                        ("stash".parse().unwrap(), Choice::default()),
-                        ("status".parse().unwrap(), Choice::default()),
-                        ("submodule".parse().unwrap(), Choice::default()),
-                        ("tag".parse().unwrap(), Choice::default()),
-                        ("worktree".parse().unwrap(), Choice::default()),
+                        ("add".try_into().unwrap(), Choice::default()),
+                        ("am".try_into().unwrap(), Choice::default()),
+                        ("archive".try_into().unwrap(), Choice::default()),
+                        ("bisect".try_into().unwrap(), Choice::default()),
+                        ("branch".try_into().unwrap(), Choice::default()),
+                        ("bundle".try_into().unwrap(), Choice::default()),
+                        ("checkout".try_into().unwrap(), Choice::default()),
+                        ("cherry-pick".try_into().unwrap(), Choice::default()),
+                        ("citool".try_into().unwrap(), Choice::default()),
+                        ("clean".try_into().unwrap(), Choice::default()),
+                        ("clone".try_into().unwrap(), Choice::default()),
+                        ("commit".try_into().unwrap(), Choice::default()),
+                        ("describe".try_into().unwrap(), Choice::default()),
+                        ("diff".try_into().unwrap(), Choice::default()),
+                        ("fetch".try_into().unwrap(), Choice::default()),
+                        ("format-patch".try_into().unwrap(), Choice::default()),
+                        ("gc".try_into().unwrap(), Choice::default()),
+                        ("grep".try_into().unwrap(), Choice::default()),
+                        ("gui".try_into().unwrap(), Choice::default()),
+                        ("init".try_into().unwrap(), Choice::default()),
+                        ("log".try_into().unwrap(), Choice::default()),
+                        ("merge".try_into().unwrap(), Choice::default()),
+                        ("mv".try_into().unwrap(), Choice::default()),
+                        ("notes".try_into().unwrap(), Choice::default()),
+                        ("pull".try_into().unwrap(), Choice::default()),
+                        ("push".try_into().unwrap(), Choice::default()),
+                        ("range-diff".try_into().unwrap(), Choice::default()),
+                        ("rebase".try_into().unwrap(), Choice::default()),
+                        ("reset".try_into().unwrap(), Choice::default()),
+                        ("revert".try_into().unwrap(), Choice::default()),
+                        ("rm".try_into().unwrap(), Choice::default()),
+                        ("shortlog".try_into().unwrap(), Choice::default()),
+                        ("show".try_into().unwrap(), Choice::default()),
+                        ("stash".try_into().unwrap(), Choice::default()),
+                        ("status".try_into().unwrap(), Choice::default()),
+                        ("submodule".try_into().unwrap(), Choice::default()),
+                        ("tag".try_into().unwrap(), Choice::default()),
+                        ("worktree".try_into().unwrap(), Choice::default()),
                         // Ancillary commands
-                        ("config".parse().unwrap(), Choice::default()),
-                        ("fast-export".parse().unwrap(), Choice::default()),
-                        ("fast-import".parse().unwrap(), Choice::default()),
-                        ("filter-branch".parse().unwrap(), Choice::default()),
-                        ("mergetool".parse().unwrap(), Choice::default()),
-                        ("pack-refs".parse().unwrap(), Choice::default()),
-                        ("prune".parse().unwrap(), Choice::default()),
-                        ("reflog".parse().unwrap(), Choice::default()),
-                        ("remote".parse().unwrap(), Choice::default()),
-                        ("repack".parse().unwrap(), Choice::default()),
-                        ("replace".parse().unwrap(), Choice::default()),
+                        ("config".try_into().unwrap(), Choice::default()),
+                        ("fast-export".try_into().unwrap(), Choice::default()),
+                        ("fast-import".try_into().unwrap(), Choice::default()),
+                        ("filter-branch".try_into().unwrap(), Choice::default()),
+                        ("mergetool".try_into().unwrap(), Choice::default()),
+                        ("pack-refs".try_into().unwrap(), Choice::default()),
+                        ("prune".try_into().unwrap(), Choice::default()),
+                        ("reflog".try_into().unwrap(), Choice::default()),
+                        ("remote".try_into().unwrap(), Choice::default()),
+                        ("repack".try_into().unwrap(), Choice::default()),
+                        ("replace".try_into().unwrap(), Choice::default()),
                         // Interrogators
-                        ("annotate".parse().unwrap(), Choice::default()),
-                        ("blame".parse().unwrap(), Choice::default()),
-                        ("count-objects".parse().unwrap(), Choice::default()),
-                        ("difftool".parse().unwrap(), Choice::default()),
-                        ("fsck".parse().unwrap(), Choice::default()),
-                        ("help".parse().unwrap(), Choice::default()),
-                        ("instaweb".parse().unwrap(), Choice::default()),
-                        ("merge-tree".parse().unwrap(), Choice::default()),
-                        ("rerere".parse().unwrap(), Choice::default()),
-                        ("show-branch".parse().unwrap(), Choice::default()),
-                        ("verify-commit".parse().unwrap(), Choice::default()),
-                        ("verify-tag".parse().unwrap(), Choice::default()),
-                        ("whatchanged".parse().unwrap(), Choice::default()),
+                        ("annotate".try_into().unwrap(), Choice::default()),
+                        ("blame".try_into().unwrap(), Choice::default()),
+                        ("count-objects".try_into().unwrap(), Choice::default()),
+                        ("difftool".try_into().unwrap(), Choice::default()),
+                        ("fsck".try_into().unwrap(), Choice::default()),
+                        ("help".try_into().unwrap(), Choice::default()),
+                        ("instaweb".try_into().unwrap(), Choice::default()),
+                        ("merge-tree".try_into().unwrap(), Choice::default()),
+                        ("rerere".try_into().unwrap(), Choice::default()),
+                        ("show-branch".try_into().unwrap(), Choice::default()),
+                        ("verify-commit".try_into().unwrap(), Choice::default()),
+                        ("verify-tag".try_into().unwrap(), Choice::default()),
+                        ("whatchanged".try_into().unwrap(), Choice::default()),
                         // Interacting with others
-                        ("archimport".parse().unwrap(), Choice::default()),
-                        ("cvsexportcommit".parse().unwrap(), Choice::default()),
-                        ("cvsimport".parse().unwrap(), Choice::default()),
-                        ("cvsserver".parse().unwrap(), Choice::default()),
-                        ("imap-send".parse().unwrap(), Choice::default()),
-                        ("p4".parse().unwrap(), Choice::default()),
-                        ("quiltimport".parse().unwrap(), Choice::default()),
-                        ("request-pull".parse().unwrap(), Choice::default()),
-                        ("send-email".parse().unwrap(), Choice::default()),
-                        ("svn".parse().unwrap(), Choice::default()),
+                        ("archimport".try_into().unwrap(), Choice::default()),
+                        ("cvsexportcommit".try_into().unwrap(), Choice::default()),
+                        ("cvsimport".try_into().unwrap(), Choice::default()),
+                        ("cvsserver".try_into().unwrap(), Choice::default()),
+                        ("imap-send".try_into().unwrap(), Choice::default()),
+                        ("p4".try_into().unwrap(), Choice::default()),
+                        ("quiltimport".try_into().unwrap(), Choice::default()),
+                        ("request-pull".try_into().unwrap(), Choice::default()),
+                        ("send-email".try_into().unwrap(), Choice::default()),
+                        ("svn".try_into().unwrap(), Choice::default()),
                     ]
                     .into_iter()
                     .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("<file>".parse().unwrap(), Choice::default())]
+                    choices: vec![("<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
                     regex: None,
-                    choices: vec![("<file>".parse().unwrap(), Choice::default())]
+                    choices: vec![("<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
