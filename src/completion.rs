@@ -168,6 +168,13 @@ impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
 }
 
 impl Choice {
+    pub const fn new(description: Option<usize>, sentinel: Option<Sentinel>) -> Self {
+        Self {
+            description,
+            sentinel,
+        }
+    }
+
     pub fn check(&self, counters: &[u8]) -> bool {
         self.sentinel.as_ref().map_or(true, |sentinel| {
             sentinel.check(counters[sentinel.counter as usize])

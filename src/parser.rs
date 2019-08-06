@@ -45,7 +45,7 @@ enum Repetition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Arg {
     regex: Option<String>,
-    choices: BTreeMap<String, Choice>,
+    choices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,23 +147,42 @@ parser! {
 }
 
 parser! {
+    fn arg_choice['a, I](descs: &'a [I::Range])(I) -> (super::completion::Argument<I::Range>, super::completion::Choice)
+    where [
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + combine::parser::combinator::StrLike + Default + Ord,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+    ] {
+        (
+            argument(),
+            optional(between(string(" ["), char(']'), word())),
+            optional(between(string(" ("), char(')'), sentinel())),
+        ).map(|(name, desc, sentinel)| {
+            (
+                name,
+                super::completion::Choice::new(
+                    desc.and_then(|desc| descs.binary_search(&desc).ok()),
+                    sentinel,
+                ),
+            )
+        })
+    }
+}
+
+parser! {
     fn sentinel[I]()(I) -> Sentinel
     where [
         I: Stream<Item = char> + RangeStream,
         I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
-        between(
-            char('('),
-            char(')'),
-            (
-                from_str(take_while1(|c: char| c.is_digit(10))),
-                char(';'),
-                optional(guard_check()),
-                char(';'),
-                optional(guard_assignment())
-            ).map(|(counter, _, test, _, change)| Sentinel::new(counter, test, change))
-        )
+        (
+            from_str(take_while1(|c: char| c.is_digit(10))),
+            char(';'),
+            optional(guard_check()),
+            char(';'),
+            optional(guard_assignment())
+        ).map(|(counter, _, test, _, change)| Sentinel::new(counter, test, change))
     }
 }
 
@@ -211,7 +230,8 @@ impl<T: Ord> TryFrom<Definition> for super::completion::Definition<T> {
             panic!("wrong version");
         }
         let (keys, descriptions): (Vec<_>, Vec<_>) = def.desc.into_iter().unzip();
-        eprintln!(
+        let keys = keys.iter().map(String::as_str).collect::<Vec<_>>();
+        /* eprintln!(
             "{:#?}\n====",
             def.sections
                 .iter()
@@ -221,7 +241,7 @@ impl<T: Ord> TryFrom<Definition> for super::completion::Definition<T> {
         eprintln!(
             "{:#?}",
             alt().easy_parse(State::new(def.arguments.as_str()))
-        );
+        );*/
         let steps = Vec::new();
 
         Ok(Self {
@@ -248,28 +268,10 @@ impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
     }
 }
 
-impl<'a> TryFrom<(&'a Choice, &'a [String])> for super::completion::Choice {
-    type Error = Errors<char, &'a str, SourcePosition>;
-
-    fn try_from((choice, descs): (&'a Choice, &'a [String])) -> Result<Self, Self::Error> {
-        Ok(Self {
-            description: choice
-                .desc
-                .as_ref()
-                .and_then(|desc| descs.binary_search(desc).ok()),
-            sentinel: choice
-                .guard
-                .as_ref()
-                .map(|guard| guard.as_str().try_into())
-                .transpose()?,
-        })
-    }
-}
-
-impl<'a> TryFrom<(&'a Arg, &'a [String])> for super::completion::Arg<String> {
+impl<'a> TryFrom<(&'a Arg, &'a [&'a str])> for super::completion::Arg<&'a str> {
     type Error = regex::Error;
 
-    fn try_from((arg, descs): (&'a Arg, &'a [String])) -> Result<Self, Self::Error> {
+    fn try_from((arg, descs): (&'a Arg, &'a [&'a str])) -> Result<Self, Self::Error> {
         Ok(Self::new(
             arg.regex
                 .as_ref()
@@ -277,13 +279,13 @@ impl<'a> TryFrom<(&'a Arg, &'a [String])> for super::completion::Arg<String> {
                 .transpose()?,
             arg.choices
                 .iter()
-                .map(|(key, value)| {
-                    (
-                        Argument::try_from(key.as_ref()).unwrap().to_owned(),
-                        (value, descs).try_into().unwrap(),
-                    )
+                .map(|choice| {
+                    arg_choice(descs)
+                        .easy_parse(State::new(choice.as_str()))
+                        .map(|(arg, _)| arg)
                 })
-                .collect(),
+                .collect::<Result<_, _>>()
+                .unwrap(),
         ))
     }
 }
@@ -397,15 +399,44 @@ mod test {
                 Sentinel::new(1, Some((Ordering::Equal, 2)), Some((Operator::Dec, 3))),
                 ""
             )),
-            sentinel().easy_parse("(1;=2;-3)"),
+            sentinel().easy_parse("1;=2;-3"),
         );
         assert_eq!(
             Ok((Sentinel::new(1, None, Some((Operator::Dec, 3))), "")),
-            sentinel().easy_parse("(1;;-3)"),
+            sentinel().easy_parse("1;;-3"),
         );
         assert_eq!(
             Ok((Sentinel::new(1, None, None), "")),
-            sentinel().easy_parse("(1;;)"),
+            sentinel().easy_parse("1;;"),
+        );
+    }
+
+    #[test]
+    fn test_arg_choice() {
+        assert_eq!(
+            Ok((
+                (
+                    Argument::new("f", None),
+                    super::super::completion::Choice::new(
+                        Some(1),
+                        Some(Sentinel::new(
+                            1,
+                            Some((Ordering::Equal, 2)),
+                            Some((Operator::Dec, 3))
+                        ))
+                    ),
+                ),
+                ""
+            )),
+            arg_choice(&["bob", "1"]).easy_parse("f [1] (1;=2;-3)"),
+        );
+        assert_eq!(
+            Ok((Sentinel::new(1, None, Some((Operator::Dec, 3))), "")),
+            sentinel().easy_parse("1;;-3"),
+        );
+        assert_eq!(
+            Ok((Sentinel::new(1, None, None), "")),
+            sentinel().easy_parse("1;;"),
         );
     }
 }
