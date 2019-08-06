@@ -246,6 +246,18 @@ impl Arg {
 }
 
 impl Sentinel {
+    pub fn new(
+        counter: u8,
+        check: Option<(Ordering, u8)>,
+        assignment: Option<(Operator, u8)>,
+    ) -> Self {
+        Self {
+            counter,
+            check,
+            assignment,
+        }
+    }
+
     pub fn check(&self, counter: u8) -> bool {
         self.check
             .map_or(true, |(test, value)| counter.cmp(&value) == test)

@@ -4,6 +4,8 @@ use combine::{char::*, range::*, stream::state::State, *};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use super::completion::Sentinel;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Definition {
     version: u8,  // Done
@@ -12,6 +14,30 @@ pub struct Definition {
     sections: HashMap<String, Arg>,
     definitions: BTreeMap<String, String>,            // Done
     desc: BTreeMap<String, BTreeMap<String, String>>, // Done
+}
+
+type Alt<T> = Vec<Vec<Token<T>>>;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum Token<T> {
+    Group(Alt<T>, Repetition),
+    Optional(Alt<T>),
+    Definition(T),
+    Argument(Argument<T>),
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct Argument<T> {
+    literal: T,
+    reference: Option<Vec<(T, T)>>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum Repetition {
+    Optional, // ?
+    Once,     // default
+    Multiple, // +
+    Any,      // *
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +53,7 @@ struct Choice {
 }
 
 parser! {
-    fn sequences[I]()(I) -> Vec<Vec<Argument<I::Range>>>
+    fn alt[I]()(I) -> Alt<I::Range>
     where [
         I: Stream<Item = char> + RangeStream,
         I::Range: combine::stream::Range + Default,
@@ -38,13 +64,55 @@ parser! {
 }
 
 parser! {
-    fn sequence[I]()(I) -> Vec<Argument<I::Range>>
+    fn repetition[I]()(I) -> Repetition
     where [
         I: Stream<Item = char> + RangeStream,
         I::Range: combine::stream::Range + Default,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
-        sep_by1(argument(), string(" "))
+        optional(choice((
+            char('+'),
+            char('*'),
+            char('?'),
+        ))).map(|result| {
+            match result {
+                None => Repetition::Once,
+                Some('+') => Repetition::Multiple,
+                Some('*') => Repetition::Any,
+                Some('?') => Repetition::Optional,
+                _ => unreachable!(),
+            }
+        })
+    }
+}
+
+parser! {
+    fn token[I]()(I) -> Token<I::Range>
+    where [
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + Default,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+    ] {
+        between(spaces(), spaces(), choice((
+                (
+                    between(char('('), char(')'), alt()),
+                    repetition()
+                ).map(|(group, repetition)| Token::Group(group, repetition)),
+                between(char('['), char(']'), alt()).map(Token::Optional),
+                char('$').with(word()).map(Token::Definition),
+                argument().map(Token::Argument),
+        )))
+    }
+}
+
+parser! {
+    fn sequence[I]()(I) -> Vec<Token<I::Range>>
+    where [
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + Default,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+    ] {
+        sep_by1(token(), string("=>"))
     }
 }
 
@@ -55,17 +123,22 @@ parser! {
         I::Range: combine::stream::Range + Default,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
-        between(spaces(), spaces(), choice(
             (
-                char('$').with(word()).map(Argument::Definition),
-                attempt((
-                    optional(word()),
-                    between(char('<'), char('>'), word())
-                ))
-                    .map(|(prefix, reference)| Argument::Reference(prefix.unwrap_or_else(I::Range::default), reference)),
-                word().map(Argument::Literal)
+                optional_word(),
+                optional(many1((between(char('<'), char('>'), word()), optional_word())))
             )
-        ))
+                .map(|(literal, reference)| Argument::new(literal, reference))
+    }
+}
+
+parser! {
+    fn optional_word[I]()(I) -> I::Range
+    where [
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + Default,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+    ] {
+        optional(word()).map(|word| word.unwrap_or_else(I::Range::default))
     }
 }
 
@@ -80,11 +153,38 @@ parser! {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-enum Argument<T> {
-    Literal(T),
-    Reference(T, T),
-    Definition(T),
+parser! {
+    fn sentinel[I]()(I) -> Sentinel
+    where [
+        I: Stream<Item = char> + RangeStream,
+        I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
+        I::Error: ParseError<I::Item, I::Range, I::Position> + From<std::num::ParseIntError>,
+    ] {
+        between(
+            char('('),
+            char(')'),
+            (
+                from_str(take_while1(|c: char| c.is_digit(10))),
+                char(';'),
+                optional(string("=1")),
+                char(';'),
+                optional(string("+1"))
+            ).map(|(counter, _, test, _, change)| Sentinel::new(counter, None, None))
+        )
+    }
+}
+
+impl<T> Argument<T> {
+    pub const fn new(literal: T, reference: Option<Vec<(T, T)>>) -> Self {
+        Self { literal, reference }
+    }
+
+    pub const fn literal(literal: T) -> Self {
+        Self {
+            literal,
+            reference: None,
+        }
+    }
 }
 
 impl std::convert::TryFrom<Definition> for super::completion::Definition {
@@ -95,14 +195,11 @@ impl std::convert::TryFrom<Definition> for super::completion::Definition {
             panic!("wrong version");
         }
         let (keys, values): (Vec<_>, Vec<_>) = def.desc.into_iter().unzip();
-        eprintln!("{:#?}\n====", def.arguments);
-
-        match sequences().easy_parse(State::new(
-            "--/bob=  =>   $alpha => bob   => sauce=<alfred> | a => alfred",
-        )) {
-            Ok((value, _remaining_input)) => println!("{:#?}", value),
-            Err(err) => println!("{}", err),
-        }
+        eprintln!("{:#?}\n====", def.sections);
+        eprintln!(
+            "{:#?}",
+            alt().easy_parse(State::new(def.arguments.as_str()))
+        );
 
         Ok(Self {
             num_counters: def.counters,
@@ -135,8 +232,8 @@ mod test {
     #[test]
     fn test_argument() {
         assert_eq!(
-            Ok((Argument::Literal("ab/=--"), "")),
-            argument().easy_parse("ab/=--")
+            Ok((Token::Argument(Argument::literal("ab/=--")), "")),
+            super::token().easy_parse("ab/=--")
         );
     }
 
@@ -144,10 +241,33 @@ mod test {
     fn test_sequence() {
         assert_eq!(
             Ok((
-                vec![Argument::Literal("ab/=--"), Argument::Definition("alfred")],
+                vec![
+                    Token::Argument(Argument::literal("ab/=--")),
+                    Token::Definition("alfred")
+                ],
                 ""
             )),
             sequence().easy_parse("     ab/=--        => $alfred")
+        );
+    }
+
+    #[test]
+    fn test_reference() {
+        assert_eq!(
+            Ok((
+                vec![
+                    vec![Token::Argument(Argument::new(
+                        "sauce=",
+                        Some(vec![("alfred", "="), ("name", "=bob")])
+                    )),],
+                    vec![
+                        Token::Argument(Argument::literal("a")),
+                        Token::Argument(Argument::literal("alfred"))
+                    ]
+                ],
+                ""
+            )),
+            alt().easy_parse("sauce=<alfred>=<name>=bob | a => alfred")
         );
     }
 
@@ -157,16 +277,48 @@ mod test {
             Ok((
                 vec![
                     vec![
-                        Argument::Literal("--/bob="),
-                        Argument::Definition("alpha"),
-                        Argument::Literal("bob"),
-                        Argument::Reference("sauce=", "alfred"),
+                        Token::Argument(Argument::literal("--/bob=")),
+                        Token::Definition("alpha"),
+                        Token::Argument(Argument::literal("bob")),
+                        Token::Argument(Argument::new("sauce=", Some(vec![("alfred", "")]))),
                     ],
-                    vec![Argument::Literal("a"), Argument::Literal("alfred")]
+                    vec![
+                        Token::Argument(Argument::literal("a")),
+                        Token::Argument(Argument::literal("alfred"))
+                    ]
                 ],
                 ""
             )),
-            sequences().easy_parse("--/bob=  =>   $alpha => bob   => sauce=<alfred> | a => alfred")
+            alt().easy_parse("--/bob=  =>   $alpha => bob   => sauce=<alfred> | a => alfred")
+        );
+    }
+
+    #[test]
+    fn test_group() {
+        assert_eq!(
+            Ok((
+                vec![vec![
+                    Token::Argument(Argument::literal("--/bob=")),
+                    Token::Group(vec![vec![Token::Definition("alpha")]], Repetition::Any,),
+                    Token::Argument(Argument::literal("bob")),
+                    Token::Group(
+                        vec![
+                            vec![Token::Argument(Argument::new(
+                                "sauce=",
+                                Some(vec![("alfred", "")])
+                            )),],
+                            vec![
+                                Token::Argument(Argument::literal("a")),
+                                Token::Argument(Argument::literal("alfred"))
+                            ]
+                        ],
+                        Repetition::Once
+                    )
+                ]],
+                ""
+            )),
+            alt()
+                .easy_parse("--/bob=  =>   ( $alpha )* => bob   => (sauce=<alfred> | a => alfred)")
         );
     }
 }
