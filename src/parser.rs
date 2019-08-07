@@ -219,17 +219,9 @@ impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> 
         }
         let (keys, descriptions): (Vec<_>, Vec<_>) =
             def.desc.iter().map(|(a, b)| (a.as_str(), b)).unzip();
-        // eprintln!(
-        // "{:#?}\n====",
-        // def.sections
-        // .iter()
-        // .map(|(k, v)| (k, (v, keys.as_slice()).try_into().unwrap()))
-        // .collect::<BTreeMap<_, super::completion::Arg<_>>>()
-        // );
         let steps = alt().easy_parse(State::new(def.arguments.as_str())).unwrap().0;
-        // eprintln!("{:#?}\n====", steps);
-        let steps = resolve(steps, 0, &def.sections, keys.as_slice());
-        eprintln!("{:#?}", steps);
+        let mut steps = resolve(steps, 0, &def.sections, keys.as_slice());
+        steps.push(Step::Match); // Last token is always match
 
         Ok(Self { num_counters: def.counters, descriptions, steps })
     }
@@ -271,12 +263,39 @@ impl<'a, 'b> TryFrom<(&'a Arg, &'b [&'a str])> for super::completion::Arg<&'a st
 // TODO: Remove debug
 fn resolve<'a, 'b>(
     mut alt: Alt<&'a str>,
-    idx: u8,
+    mut idx: u8,
     defs: &'a Definitions,
     descs: &'b [&'a str],
 ) -> Vec<Step<&'a str>> {
-    // TODO: handle variations
-    seq_to_vec(alt.pop().unwrap(), idx, defs, descs)
+    match alt.len() {
+        0 => Vec::new(),
+        1 => seq_to_vec(alt.pop().unwrap(), idx, defs, descs),
+        _ => {
+            let mut steps = Vec::with_capacity(2 * alt.len());
+            let mut alt = alt.into_iter();
+            // Trick to avoid reparsing the entire string. This jump will be set at the end with the
+            // correct length. Matching alternatives will jump to it and then match.
+            let matching = idx + 1;
+            idx += 2;
+            steps.push(Step::Jump(idx));
+            steps.push(Step::Jump(0));
+            while let Some(seq) = alt.next() {
+                let extra_steps = seq_to_vec(seq, idx, defs, descs);
+                idx += extra_steps.len() as u8 + 2;
+                if alt.size_hint().0 != 0 {
+                    steps.push(Step::Split(idx));
+                }
+                steps.extend(extra_steps);
+                if alt.size_hint().0 != 0 {
+                    steps.push(Step::Jump(matching))
+                }
+            }
+            if let Some(Step::Jump(ref mut matching)) = steps.get_mut(1) {
+                *matching = idx - 2;
+            }
+            steps
+        }
+    }
 }
 
 fn seq_to_vec<'a, 'b>(
@@ -287,29 +306,28 @@ fn seq_to_vec<'a, 'b>(
 ) -> Vec<Step<&'a str>> {
     let mut steps = Vec::with_capacity(seq.len());
     for token in seq {
+        let start = idx + steps.len() as u8;
         match token {
             Token::Argument(arg) => steps.push(Step::Check(super::completion::Arg::new(
                 None,
                 vec![(arg, super::completion::Choice::new(None, None))].into_iter().collect(),
             ))),
-            Token::Group(alt, Repetition::Once) => {
-                let extra_steps = resolve(alt, steps.len() as u8 + 1, defs, descs);
-                steps.push(Step::Split(idx + extra_steps.len() as u8 + 1));
-                steps.extend(extra_steps);
-            }
+            Token::Group(alt, Repetition::Once) => steps.extend(resolve(alt, start, defs, descs)),
             Token::Group(alt, Repetition::Optional) => {
-                steps.extend(resolve(alt, steps.len() as u8, defs, descs))
+                let extra_steps = resolve(alt, start + 1, defs, descs);
+                steps.push(Step::Split(start + extra_steps.len() as u8 + 1));
+                steps.extend(extra_steps);
             }
             Token::Group(alt, Repetition::Any) => {
-                let extra_steps = resolve(alt, steps.len() as u8 + 1, defs, descs);
-                steps.push(Step::Split(idx + extra_steps.len() as u8 + 1));
+                let extra_steps = resolve(alt, start + 1, defs, descs);
+                steps.push(Step::Split(start + extra_steps.len() as u8 + 2));
                 steps.extend(extra_steps);
-                steps.push(Step::Split(idx + 1));
+                steps.push(Step::Split(start + 1));
             }
             Token::Group(alt, Repetition::Multiple) => {
-                let extra_steps = resolve(alt, steps.len() as u8 + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs);
                 steps.extend(extra_steps);
-                steps.push(Step::Split(idx));
+                steps.push(Step::Split(start));
             }
             Token::Definition(def) => {
                 steps.push(Step::Check((defs.get(def).unwrap(), descs).try_into().unwrap()))

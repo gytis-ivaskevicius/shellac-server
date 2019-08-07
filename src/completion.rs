@@ -126,9 +126,10 @@ impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
                 ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
             }
             Some(reference) => {
-                if self.literal.as_ref().starts_with(start) {
+                let literal = self.literal.as_ref();
+                if literal != start && literal.starts_with(start) {
                     ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
-                } else if start.starts_with(self.literal.as_ref()) {
+                } else if start.starts_with(literal) {
                     // if reference == "file" {
                     // let file_start = start.trim_start_matches(self.literal);
                     // let out = Command::new("ls")
@@ -150,8 +151,7 @@ impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
                     // } else {
                     ChoiceResolver::Literal(std::iter::once(format!(
                         "{}<{:?}>",
-                        self.literal.as_ref(),
-                        reference
+                        literal, reference
                     )))
                 // }
                 } else {
