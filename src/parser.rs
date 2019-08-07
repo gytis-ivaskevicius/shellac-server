@@ -293,6 +293,11 @@ fn seq_to_vec<'a, 'b>(
                 vec![(arg, super::completion::Choice::new(None, None))].into_iter().collect(),
             ))),
             Token::Group(alt, Repetition::Once) => {
+                let extra_steps = resolve(alt, steps.len() as u8 + 1, defs, descs);
+                steps.push(Step::Split(idx + extra_steps.len() as u8 + 1));
+                steps.extend(extra_steps);
+            }
+            Token::Group(alt, Repetition::Optional) => {
                 steps.extend(resolve(alt, steps.len() as u8, defs, descs))
             }
             Token::Group(alt, Repetition::Any) => {
@@ -301,12 +306,13 @@ fn seq_to_vec<'a, 'b>(
                 steps.extend(extra_steps);
                 steps.push(Step::Split(idx + 1));
             }
+            Token::Group(alt, Repetition::Multiple) => {
+                let extra_steps = resolve(alt, steps.len() as u8 + 1, defs, descs);
+                steps.extend(extra_steps);
+                steps.push(Step::Split(idx));
+            }
             Token::Definition(def) => {
                 steps.push(Step::Check((defs.get(def).unwrap(), descs).try_into().unwrap()))
-            }
-            a => {
-                println!("{:?}", a);
-                unimplemented!();
             }
         }
     }
