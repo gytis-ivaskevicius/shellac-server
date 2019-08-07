@@ -1,7 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
-    convert::TryFrom,
+    convert::{TryFrom, TryInto},
 };
 
 use combine::{
@@ -18,14 +18,15 @@ use super::completion::{Argument, Operator, Sentinel, Step};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Definition {
-    version:     u8, // Done
-    counters:    u8, // Done
+    version:     u8,
+    counters:    u8,
     arguments:   String,
-    sections:    HashMap<String, Arg>,
-    definitions: BTreeMap<String, String>, // Done
-    desc:        BTreeMap<String, BTreeMap<String, String>>, // Done
+    sections:    Definitions,
+    definitions: BTreeMap<String, String>,
+    desc:        BTreeMap<String, BTreeMap<String, String>>,
 }
 
+type Definitions = HashMap<String, Arg>;
 type Alt<T> = Vec<Vec<Token<T>>>;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -55,6 +56,7 @@ struct Choice {
     guard: Option<String>,
 }
 
+// Keep the parser because this is a recursive type
 parser! {
     fn alt[I]()(I) -> Alt<I::Range>
     where [
@@ -72,7 +74,7 @@ where
     I::Range: combine::stream::Range + Default,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    char('+').map(|_| Repetition::Multiple).or(char('*').map(|_| Repetition::Any))
+    choice!(char('+').map(|_| Repetition::Multiple), char('*').map(|_| Repetition::Any))
 }
 
 fn token<I>() -> impl Parser<Input = I, Output = Token<I::Range>>
@@ -144,10 +146,12 @@ where
 {
     (
         argument(),
-        optional(between(string(" ["), char(']'), word())),
-        optional(between(string(" ("), char(')'), sentinel())),
+        spaces(),
+        optional(between(string("["), char(']'), word())),
+        spaces(),
+        optional(between(string("("), char(')'), sentinel())),
     )
-        .map(move |(name, desc, sentinel)| {
+        .map(move |(name, _, desc, _, sentinel)| {
             (
                 name,
                 super::completion::Choice::new(
@@ -223,13 +227,13 @@ impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> 
         // .collect::<BTreeMap<_, super::completion::Arg<_>>>()
         // );
         let steps = alt().easy_parse(State::new(def.arguments.as_str())).unwrap().0;
+        // eprintln!("{:#?}\n====", steps);
+        let steps = resolve(steps, 0, &def.sections, keys.as_slice());
         eprintln!("{:#?}", steps);
 
-        Ok(Self { num_counters: def.counters, descriptions, steps: resolve(&steps) })
+        Ok(Self { num_counters: def.counters, descriptions, steps })
     }
 }
-
-fn resolve<T: Ord>(alt: &Alt<T>) -> Vec<Step<T>> { Vec::new() }
 
 impl<'a> TryFrom<&'a str> for super::completion::Argument<&'a str> {
     type Error = Errors<char, &'a str, SourcePosition>;
@@ -247,10 +251,10 @@ impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
     }
 }
 
-impl<'a> TryFrom<(&'a Arg, &'a [&'a str])> for super::completion::Arg<&'a str> {
+impl<'a, 'b> TryFrom<(&'a Arg, &'b [&'a str])> for super::completion::Arg<&'a str> {
     type Error = regex::Error;
 
-    fn try_from((arg, descs): (&'a Arg, &'a [&'a str])) -> Result<Self, Self::Error> {
+    fn try_from((arg, descs): (&'a Arg, &'b [&'a str])) -> Result<Self, Self::Error> {
         Ok(Self::new(
             arg.regex.as_ref().map(|regex| Regex::new(regex)).transpose()?,
             arg.choices
@@ -262,6 +266,51 @@ impl<'a> TryFrom<(&'a Arg, &'a [&'a str])> for super::completion::Arg<&'a str> {
                 .unwrap(),
         ))
     }
+}
+
+// TODO: Remove debug
+fn resolve<'a, 'b>(
+    mut alt: Alt<&'a str>,
+    idx: u8,
+    defs: &'a Definitions,
+    descs: &'b [&'a str],
+) -> Vec<Step<&'a str>> {
+    // TODO: handle variations
+    seq_to_vec(alt.pop().unwrap(), idx, defs, descs)
+}
+
+fn seq_to_vec<'a, 'b>(
+    seq: Vec<Token<&'a str>>,
+    idx: u8,
+    defs: &'a Definitions,
+    descs: &'b [&'a str],
+) -> Vec<Step<&'a str>> {
+    let mut steps = Vec::with_capacity(seq.len());
+    for token in seq {
+        match token {
+            Token::Argument(arg) => steps.push(Step::Check(super::completion::Arg::new(
+                None,
+                vec![(arg, super::completion::Choice::new(None, None))].into_iter().collect(),
+            ))),
+            Token::Group(alt, Repetition::Once) => {
+                steps.extend(resolve(alt, steps.len() as u8, defs, descs))
+            }
+            Token::Group(alt, Repetition::Any) => {
+                let extra_steps = resolve(alt, steps.len() as u8 + 1, defs, descs);
+                steps.push(Step::Split(idx + extra_steps.len() as u8 + 1));
+                steps.extend(extra_steps);
+                steps.push(Step::Split(idx + 1));
+            }
+            Token::Definition(def) => {
+                steps.push(Step::Check((defs.get(def).unwrap(), descs).try_into().unwrap()))
+            }
+            a => {
+                println!("{:?}", a);
+                unimplemented!();
+            }
+        }
+    }
+    steps
 }
 
 #[cfg(test)]

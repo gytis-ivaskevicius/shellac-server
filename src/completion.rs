@@ -43,8 +43,8 @@ impl<T: PartialEq + Ord> PartialEq for Arg<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Choice {
-    pub description: Option<usize>,
-    pub sentinel:    Option<Sentinel>,
+    description: Option<usize>,
+    sentinel:    Option<Sentinel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

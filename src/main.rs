@@ -66,7 +66,6 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
 
         let def = serde_yaml::from_str::<parser::Definition>(&content).unwrap();
         let def = Definition::try_from(&def).unwrap();
-        let def = Definition::new(&content.trim()).unwrap();
         let choices = VMSearcher::new(&def, &request).choices().unwrap();
         let duration = start.elapsed();
         serde_json::to_writer(&mut writer, &choices).unwrap();
