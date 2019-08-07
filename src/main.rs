@@ -1,10 +1,16 @@
-use shellac_server::{codec::ArgvCodec, completion, AutocompRequest};
+use shellac_server::{
+    completion::{Definition, VMSearcher},
+    parser, AutocompRequest,
+};
 
-use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
-use std::thread;
+use std::{
+    convert::TryFrom,
+    fs::{self, File},
+    io::{self, BufReader, BufWriter, Read, Write},
+    os::unix::net::UnixListener,
+    path::{Path, PathBuf},
+    thread,
+};
 
 use serde_json::Deserializer;
 use structopt::StructOpt;
@@ -53,11 +59,19 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
         let request = request.unwrap();
         let start = Instant::now();
         let path = get_comp_file(&request.argv()[0])?;
-        let file = File::open(path)?;
-        let completed = completion::complete(file, request)?;
+
+        let mut file = File::open(path)?;
+        let mut content = String::with_capacity(1024);
+        file.read_to_string(&mut content)?;
+
+        let def = serde_yaml::from_str::<parser::Definition>(&content).unwrap();
+        let def = Definition::try_from(&def).unwrap();
+        let start2 = Instant::now();
+        let choices = VMSearcher::new(&def, &request).choices().unwrap();
+        let duration2 = start2.elapsed();
         let duration = start.elapsed();
-        serde_json::to_writer(&mut writer, &completed).unwrap();
-        eprintln!("Time elapsed: {:?}", duration);
+        serde_json::to_writer(&mut writer, &choices).unwrap();
+        eprintln!("Time elapsed: {:?}, {:?}", duration2, duration);
     }
     Ok(())
 }
@@ -86,9 +100,8 @@ fn main() {
             }
         }
     } else {
-        match handle_client(io::stdin().lock(), io::stdout().lock()) {
-            Ok(()) => eprintln!("Socket closed"),
-            Err(err) => eprintln!("Could not execute request: {}", err),
+        if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock()) {
+            eprintln!("Could not execute request: {}", err);
         }
     }
 }

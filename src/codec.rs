@@ -1,8 +1,9 @@
-use std::io::{self, ErrorKind, Read};
-use std::mem;
+use std::{
+    io::{self, ErrorKind, Read},
+    mem,
+};
 
-use super::AutocompRequest;
-use super::Error;
+use super::{AutocompRequest, Error};
 
 #[derive(Debug)]
 pub struct ArgvCodec<R: Read> {
@@ -10,9 +11,7 @@ pub struct ArgvCodec<R: Read> {
 }
 
 impl<R: Read> ArgvCodec<R> {
-    pub fn new(reader: R) -> Self {
-        Self { reader }
-    }
+    pub fn new(reader: R) -> Self { Self { reader } }
 }
 
 impl<R: Read> ArgvCodec<R> {
@@ -22,7 +21,7 @@ impl<R: Read> ArgvCodec<R> {
             0 => return Ok(None),
             1 => {
                 return Err(
-                    io::Error::new(ErrorKind::UnexpectedEof, "failed to fill whole buffer").into(),
+                    io::Error::new(ErrorKind::UnexpectedEof, "failed to fill whole buffer").into()
                 )
             }
             _ => (),
