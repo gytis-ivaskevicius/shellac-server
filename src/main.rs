@@ -3,12 +3,14 @@ use shellac_server::{
     parser, AutocompRequest,
 };
 
-use std::convert::TryInto;
-use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
-use std::thread;
+use std::{
+    convert::TryFrom,
+    fs::{self, File},
+    io::{self, BufReader, BufWriter, Read, Write},
+    os::unix::net::UnixListener,
+    path::{Path, PathBuf},
+    thread,
+};
 
 use serde_json::Deserializer;
 use structopt::StructOpt;
@@ -62,11 +64,8 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
         let mut content = String::with_capacity(1024);
         file.read_to_string(&mut content)?;
 
-        let def: Definition<String> = serde_yaml::from_str::<parser::Definition>(&content)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        eprintln!("{:#?}", def);
+        let def = serde_yaml::from_str::<parser::Definition>(&content).unwrap();
+        let def = Definition::try_from(&def).unwrap();
         let def = Definition::new(&content.trim()).unwrap();
         let choices = VMSearcher::new(&def, &request).choices().unwrap();
         let duration = start.elapsed();
@@ -100,9 +99,8 @@ fn main() {
             }
         }
     } else {
-        match handle_client(io::stdin().lock(), io::stdout().lock()) {
-            Ok(()) => eprintln!("Socket closed"),
-            Err(err) => eprintln!("Could not execute request: {}", err),
+        if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock()) {
+            eprintln!("Could not execute request: {}", err);
         }
     }
 }

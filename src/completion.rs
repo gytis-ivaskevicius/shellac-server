@@ -1,14 +1,15 @@
 use regex::Regex;
 use retain_mut::RetainMut;
 
-use std::cmp::{Ord, Ordering, PartialOrd};
-use std::collections::BTreeMap;
-use std::convert::TryInto;
+use std::{
+    cmp::{Ord, Ordering, PartialOrd},
+    collections::BTreeMap,
+    convert::TryInto,
+};
 // use std::process::Command;
 // use std::process::Stdio;
 
-use super::AutocompRequest;
-use super::Error;
+use super::{AutocompRequest, Error};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step<T: Ord> {
@@ -19,10 +20,11 @@ pub enum Step<T: Ord> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Definition<T: Ord> {
-    pub steps: Vec<Step<T>>,
+pub struct Definition<'a, T: Ord> {
+    pub steps:        Vec<Step<T>>,
     pub num_counters: u8,
-    pub descriptions: Vec<BTreeMap<String, String>>, // A HashMap is clearer, but a vec is faster
+    pub descriptions: Vec<&'a BTreeMap<String, String>>, /* A HashMap is clearer, but a vec is
+                                                          * faster */
 }
 
 #[derive(Debug, Clone, Default)]
@@ -36,21 +38,19 @@ pub struct Arg<T: Ord> {
 impl<T: Eq + Ord> Eq for Arg<T> {}
 
 impl<T: PartialEq + Ord> PartialEq for Arg<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.choices.eq(&other.choices)
-    }
+    fn eq(&self, other: &Self) -> bool { self.choices.eq(&other.choices) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Choice {
     pub description: Option<usize>,
-    pub sentinel: Option<Sentinel>,
+    pub sentinel:    Option<Sentinel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Sentinel {
-    counter: u8,
-    check: Option<(Ordering, u8)>,
+    counter:    u8,
+    check:      Option<(Ordering, u8)>,
     assignment: Option<(Operator, u8)>,
 }
 
@@ -63,7 +63,7 @@ pub enum Operator {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Argument<T> {
-    literal: T,
+    literal:   T,
     reference: Option<Vec<(T, T)>>,
 }
 
@@ -76,15 +76,15 @@ pub enum ChoiceResolver<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VMSearcher<'a, T: Ord> {
-    def: &'a Definition<T>,
+    def:   &'a Definition<'a, T>,
     stack: Vec<Searcher>,
-    args: &'a AutocompRequest,
+    args:  &'a AutocompRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
 pub struct Searcher {
-    counters: Vec<u8>,
-    step: u8,
+    counters:   Vec<u8>,
+    step:       u8,
     completion: Option<u8>,
 }
 
@@ -101,9 +101,7 @@ impl<T> Iterator for ChoiceResolver<T> {
 }
 
 impl<T> Argument<T> {
-    pub const fn literal(&self) -> &T {
-        &self.literal
-    }
+    pub const fn literal(&self) -> &T { &self.literal }
 
     pub const fn new(literal: T, reference: Option<Vec<(T, T)>>) -> Self {
         Self { literal, reference }
@@ -113,12 +111,11 @@ impl<T> Argument<T> {
 impl<'a> Argument<&'a str> {
     pub fn to_owned(&self) -> Argument<String> {
         Argument {
-            literal: self.literal.to_owned(),
-            reference: self.reference.as_ref().map(|refs| {
-                refs.iter()
-                    .map(|(r, f)| (r.to_string(), f.to_string()))
-                    .collect()
-            }),
+            literal:   self.literal.to_owned(),
+            reference: self
+                .reference
+                .as_ref()
+                .map(|refs| refs.iter().map(|(r, f)| (r.to_string(), f.to_string())).collect()),
         }
     }
 }
@@ -133,25 +130,25 @@ impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
                 if self.literal.as_ref().starts_with(start) {
                     ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
                 } else if start.starts_with(self.literal.as_ref()) {
-                    /* if reference == "file" {
-                        let file_start = start.trim_start_matches(self.literal);
-                        let out = Command::new("ls")
-                            .arg("-1")
-                            .stdout(Stdio::piped())
-                            .spawn()
-                            .unwrap()
-                            .wait_with_output()
-                            .unwrap();
-                        ChoiceResolver::Reference(
-                            String::from_utf8(out.stdout)
-                                .unwrap()
-                                .lines()
-                                .filter(|line| line.starts_with(file_start))
-                                .map(|line| format!("{}{}", prefix, line))
-                                .collect::<Vec<_>>()
-                                .into_iter(),
-                        )
-                    } else { */
+                    // if reference == "file" {
+                    // let file_start = start.trim_start_matches(self.literal);
+                    // let out = Command::new("ls")
+                    // .arg("-1")
+                    // .stdout(Stdio::piped())
+                    // .spawn()
+                    // .unwrap()
+                    // .wait_with_output()
+                    // .unwrap();
+                    // ChoiceResolver::Reference(
+                    // String::from_utf8(out.stdout)
+                    // .unwrap()
+                    // .lines()
+                    // .filter(|line| line.starts_with(file_start))
+                    // .map(|line| format!("{}{}", prefix, line))
+                    // .collect::<Vec<_>>()
+                    // .into_iter(),
+                    // )
+                    // } else {
                     ChoiceResolver::Literal(std::iter::once(format!(
                         "{}<{:?}>",
                         self.literal.as_ref(),
@@ -169,23 +166,18 @@ impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
 
 impl Choice {
     pub const fn new(description: Option<usize>, sentinel: Option<Sentinel>) -> Self {
-        Self {
-            description,
-            sentinel,
-        }
+        Self { description, sentinel }
     }
 
     pub fn check(&self, counters: &[u8]) -> bool {
-        self.sentinel.as_ref().map_or(true, |sentinel| {
-            sentinel.check(counters[sentinel.counter as usize])
-        })
+        self.sentinel
+            .as_ref()
+            .map_or(true, |sentinel| sentinel.check(counters[sentinel.counter as usize]))
     }
 }
 
 impl<T: Ord> Ord for Argument<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.literal().cmp(other.literal())
-    }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.literal().cmp(other.literal()) }
 }
 
 impl<T: PartialOrd> PartialOrd for Argument<T> {
@@ -260,16 +252,11 @@ impl Sentinel {
         check: Option<(Ordering, u8)>,
         assignment: Option<(Operator, u8)>,
     ) -> Self {
-        Self {
-            counter,
-            check,
-            assignment,
-        }
+        Self { counter, check, assignment }
     }
 
     pub fn check(&self, counter: u8) -> bool {
-        self.check
-            .map_or(true, |(test, value)| counter.cmp(&value) == test)
+        self.check.map_or(true, |(test, value)| counter.cmp(&value) == test)
     }
 
     pub fn check_and_update(&self, counter: &mut u8) -> bool {
@@ -290,25 +277,15 @@ impl Sentinel {
 
 impl Searcher {
     pub fn new(num_counters: u8, step: u8) -> Self {
-        Self {
-            counters: vec![0; num_counters as usize],
-            step,
-            completion: None,
-        }
+        Self { counters: vec![0; num_counters as usize], step, completion: None }
     }
 
-    pub fn step(&mut self) {
-        self.step += 1;
-    }
+    pub fn step(&mut self) { self.step += 1; }
 }
 
 impl<'a, T: ToString + std::fmt::Debug + AsRef<str> + Ord> VMSearcher<'a, T> {
     pub fn new(def: &'a Definition<T>, args: &'a AutocompRequest) -> Self {
-        Self {
-            def,
-            stack: vec![Searcher::new(def.num_counters, 0)],
-            args,
-        }
+        Self { def, stack: vec![Searcher::new(def.num_counters, 0)], args }
     }
 
     pub fn choices(mut self) -> Result<Vec<String>, Error> {
@@ -358,53 +335,45 @@ impl<'a, T: ToString + std::fmt::Debug + AsRef<str> + Ord> VMSearcher<'a, T> {
                 })
             } else {
                 let def = &self.def;
-                self.stack
-                    .retain_mut(|searcher| match def.steps.get(searcher.step as usize) {
-                        Some(Step::Check(ref arg_def)) => {
-                            searcher.step();
-                            if let Some(regex) = &arg_def.regex {
-                                if let Some(captures) = regex.captures(arg) {
-                                    for capture in captures.iter().filter_map(|x| x) {
-                                        for (choice, desc) in &arg_def.choices {
-                                            if capture
-                                                .as_str()
-                                                .starts_with(choice.literal().as_ref())
-                                            {
-                                                if let Some(sentinel) = &desc.sentinel {
-                                                    sentinel.check_and_update(
-                                                        &mut searcher.counters
-                                                            [sentinel.counter as usize],
-                                                    );
-                                                }
+                self.stack.retain_mut(|searcher| match def.steps.get(searcher.step as usize) {
+                    Some(Step::Check(ref arg_def)) => {
+                        searcher.step();
+                        if let Some(regex) = &arg_def.regex {
+                            if let Some(captures) = regex.captures(arg) {
+                                for capture in captures.iter().filter_map(|x| x) {
+                                    for (choice, desc) in &arg_def.choices {
+                                        if capture.as_str().starts_with(choice.literal().as_ref()) {
+                                            if let Some(sentinel) = &desc.sentinel {
+                                                sentinel.check_and_update(
+                                                    &mut searcher.counters
+                                                        [sentinel.counter as usize],
+                                                );
                                             }
                                         }
                                     }
-                                    true
-                                } else {
-                                    false
                                 }
+                                true
                             } else {
-                                arg_def.choices.iter().any(|(choice, desc)| {
-                                    arg.starts_with(choice.literal().as_ref())
-                                        && desc.sentinel.as_ref().map_or(true, |sentinel| {
-                                            sentinel.check_and_update(
-                                                &mut searcher.counters[sentinel.counter as usize],
-                                            )
-                                        })
-                                })
+                                false
                             }
+                        } else {
+                            arg_def.choices.iter().any(|(choice, desc)| {
+                                arg.starts_with(choice.literal().as_ref())
+                                    && desc.sentinel.as_ref().map_or(true, |sentinel| {
+                                        sentinel.check_and_update(
+                                            &mut searcher.counters[sentinel.counter as usize],
+                                        )
+                                    })
+                            })
                         }
-                        None | Some(Step::Match) => false,
-                        _ => unreachable!(),
-                    });
+                    }
+                    None | Some(Step::Match) => false,
+                    _ => unreachable!(),
+                });
             }
         }
 
-        let VMSearcher {
-            mut stack,
-            args,
-            def,
-        } = self;
+        let VMSearcher { mut stack, args, def } = self;
         let arg = &args.argv()[args.word];
 
         let mut results = Vec::with_capacity(20);
@@ -423,16 +392,16 @@ impl<'a, T: ToString + std::fmt::Debug + AsRef<str> + Ord> VMSearcher<'a, T> {
     }
 }
 
-impl<'a> Definition<&'a str> {
+impl<'a> Definition<'a, &'a str> {
     pub fn new<S: AsRef<str>>(_def: &S) -> Result<Self, regex::Error> {
         Ok(Self {
             num_counters: 1,
             descriptions: Vec::new(),
-            steps: vec![
+            steps:        vec![
                 Step::Split(11),
                 Step::Split(4),
                 Step::Check(Arg {
-                    regex: Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
+                    regex:   Some(Regex::new(r"^-([a-zA-Z])+$|^--([a-zA-Z_\-=]{2,})$")?),
                     choices: vec![
                         ("version".try_into().unwrap(), Choice::default()),
                         ("help".try_into().unwrap(), Choice::default()),
@@ -445,9 +414,9 @@ impl<'a> Definition<&'a str> {
                             "p".try_into().unwrap(),
                             Choice {
                                 description: None,
-                                sentinel: Some(Sentinel {
-                                    counter: 0,
-                                    check: Some((Ordering::Equal, 0)),
+                                sentinel:    Some(Sentinel {
+                                    counter:    0,
+                                    check:      Some((Ordering::Equal, 0)),
                                     assignment: Some((Operator::Set, 1)),
                                 }),
                             },
@@ -468,33 +437,33 @@ impl<'a> Definition<&'a str> {
                 Step::Jump(0),
                 Step::Split(8),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![("-C".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![("<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Jump(0),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![("-c".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![("<name>=<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Split(1),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![
                         ("add".try_into().unwrap(), Choice::default()),
                         ("am".try_into().unwrap(), Choice::default()),
@@ -576,13 +545,13 @@ impl<'a> Definition<&'a str> {
                     .collect(),
                 }),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![("<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),
                 }),
                 Step::Check(Arg {
-                    regex: None,
+                    regex:   None,
                     choices: vec![("<file>".try_into().unwrap(), Choice::default())]
                         .into_iter()
                         .collect(),

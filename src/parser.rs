@@ -1,6 +1,8 @@
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
-use std::convert::{TryFrom, TryInto};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap},
+    convert::TryFrom,
+};
 
 use combine::{
     char::*,
@@ -12,16 +14,16 @@ use combine::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::completion::{Argument, Operator, Sentinel};
+use super::completion::{Argument, Operator, Sentinel, Step};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Definition {
-    version: u8,  // Done
-    counters: u8, // Done
-    arguments: String,
-    sections: HashMap<String, Arg>,
-    definitions: BTreeMap<String, String>,            // Done
-    desc: BTreeMap<String, BTreeMap<String, String>>, // Done
+    version:     u8, // Done
+    counters:    u8, // Done
+    arguments:   String,
+    sections:    HashMap<String, Arg>,
+    definitions: BTreeMap<String, String>, // Done
+    desc:        BTreeMap<String, BTreeMap<String, String>>, // Done
 }
 
 type Alt<T> = Vec<Vec<Token<T>>>;
@@ -44,13 +46,13 @@ enum Repetition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Arg {
-    regex: Option<String>,
+    regex:   Option<String>,
     choices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Choice {
-    desc: Option<String>,
+    desc:  Option<String>,
     guard: Option<String>,
 }
 
@@ -222,35 +224,30 @@ parser! {
     }
 }
 
-impl<T: Ord> TryFrom<Definition> for super::completion::Definition<T> {
+impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> {
     type Error = regex::Error;
 
-    fn try_from(def: Definition) -> Result<Self, Self::Error> {
+    fn try_from(def: &'a Definition) -> Result<Self, Self::Error> {
         if def.version != 0 {
             panic!("wrong version");
         }
-        let (keys, descriptions): (Vec<_>, Vec<_>) = def.desc.into_iter().unzip();
-        let keys = keys.iter().map(String::as_str).collect::<Vec<_>>();
-        /* eprintln!(
-            "{:#?}\n====",
-            def.sections
-                .iter()
-                .map(|(k, v)| (k, (v, keys.as_slice()).try_into().unwrap()))
-                .collect::<BTreeMap<_, super::completion::Arg<_>>>()
-        );
-        eprintln!(
-            "{:#?}",
-            alt().easy_parse(State::new(def.arguments.as_str()))
-        );*/
-        let steps = Vec::new();
+        let (keys, descriptions): (Vec<_>, Vec<_>) =
+            def.desc.iter().map(|(a, b)| (a.as_str(), b)).unzip();
+        // eprintln!(
+        // "{:#?}\n====",
+        // def.sections
+        // .iter()
+        // .map(|(k, v)| (k, (v, keys.as_slice()).try_into().unwrap()))
+        // .collect::<BTreeMap<_, super::completion::Arg<_>>>()
+        // );
+        let steps = alt().easy_parse(State::new(def.arguments.as_str())).unwrap().0;
+        eprintln!("{:#?}", steps);
 
-        Ok(Self {
-            num_counters: def.counters,
-            descriptions,
-            steps,
-        })
+        Ok(Self { num_counters: def.counters, descriptions, steps: resolve(&steps) })
     }
 }
+
+fn resolve<T: Ord>(alt: &Alt<T>) -> Vec<Step<T>> { Vec::new() }
 
 impl<'a> TryFrom<&'a str> for super::completion::Argument<&'a str> {
     type Error = Errors<char, &'a str, SourcePosition>;
@@ -273,16 +270,11 @@ impl<'a> TryFrom<(&'a Arg, &'a [&'a str])> for super::completion::Arg<&'a str> {
 
     fn try_from((arg, descs): (&'a Arg, &'a [&'a str])) -> Result<Self, Self::Error> {
         Ok(Self::new(
-            arg.regex
-                .as_ref()
-                .map(|regex| Regex::new(regex))
-                .transpose()?,
+            arg.regex.as_ref().map(|regex| Regex::new(regex)).transpose()?,
             arg.choices
                 .iter()
                 .map(|choice| {
-                    arg_choice(descs)
-                        .easy_parse(State::new(choice.as_str()))
-                        .map(|(arg, _)| arg)
+                    arg_choice(descs).easy_parse(State::new(choice.as_str())).map(|(arg, _)| arg)
                 })
                 .collect::<Result<_, _>>()
                 .unwrap(),
@@ -311,10 +303,7 @@ mod test {
     fn test_sequence() {
         assert_eq!(
             Ok((
-                vec![
-                    Token::Argument(Argument::new("ab/=--", None)),
-                    Token::Definition("alfred")
-                ],
+                vec![Token::Argument(Argument::new("ab/=--", None)), Token::Definition("alfred")],
                 ""
             )),
             sequence().easy_parse("     ab/=--        => $alfred")
@@ -395,20 +384,14 @@ mod test {
     #[test]
     fn test_sentinel() {
         assert_eq!(
-            Ok((
-                Sentinel::new(1, Some((Ordering::Equal, 2)), Some((Operator::Dec, 3))),
-                ""
-            )),
+            Ok((Sentinel::new(1, Some((Ordering::Equal, 2)), Some((Operator::Dec, 3))), "")),
             sentinel().easy_parse("1;=2;-3"),
         );
         assert_eq!(
             Ok((Sentinel::new(1, None, Some((Operator::Dec, 3))), "")),
             sentinel().easy_parse("1;;-3"),
         );
-        assert_eq!(
-            Ok((Sentinel::new(1, None, None), "")),
-            sentinel().easy_parse("1;;"),
-        );
+        assert_eq!(Ok((Sentinel::new(1, None, None), "")), sentinel().easy_parse("1;;"),);
     }
 
     #[test]
@@ -434,9 +417,6 @@ mod test {
             Ok((Sentinel::new(1, None, Some((Operator::Dec, 3))), "")),
             sentinel().easy_parse("1;;-3"),
         );
-        assert_eq!(
-            Ok((Sentinel::new(1, None, None), "")),
-            sentinel().easy_parse("1;;"),
-        );
+        assert_eq!(Ok((Sentinel::new(1, None, None), "")), sentinel().easy_parse("1;;"),);
     }
 }

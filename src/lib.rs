@@ -5,9 +5,7 @@ pub mod completion;
 pub mod parser;
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::io;
-use std::string::FromUtf8Error;
+use std::{fmt, io, string::FromUtf8Error};
 
 #[derive(Debug, Serialize)]
 pub struct Result {
@@ -23,15 +21,11 @@ pub enum Error {
 }
 
 impl From<io::Error> for Error {
-    fn from(cause: io::Error) -> Self {
-        Error::Io(cause)
-    }
+    fn from(cause: io::Error) -> Self { Error::Io(cause) }
 }
 
 impl From<FromUtf8Error> for Error {
-    fn from(cause: FromUtf8Error) -> Self {
-        Error::FileNotUtf8(cause)
-    }
+    fn from(cause: FromUtf8Error) -> Self { Error::FileNotUtf8(cause) }
 }
 
 impl std::error::Error for Error {}
@@ -46,11 +40,9 @@ impl fmt::Display for Error {
                 word, len
             ),
             Error::FileNotUtf8(err) => write!(f, "The completion file is not valid utf8: {}", err),
-            Error::DocOpt(err) => write!(
-                f,
-                "The completion file contained an invalid docopt format: {}",
-                err
-            ),
+            Error::DocOpt(err) => {
+                write!(f, "The completion file contained an invalid docopt format: {}", err)
+            }
         }
     }
 }
@@ -62,11 +54,7 @@ pub struct AutocompRequest {
 }
 
 impl AutocompRequest {
-    pub const fn argv(&self) -> &Vec<String> {
-        &self.argv
-    }
+    pub const fn argv(&self) -> &Vec<String> { &self.argv }
 
-    pub const fn word(&self) -> usize {
-        self.word
-    }
+    pub const fn word(&self) -> usize { self.word }
 }
