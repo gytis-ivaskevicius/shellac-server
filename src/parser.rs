@@ -31,7 +31,6 @@ type Alt<T> = Vec<Vec<Token<T>>>;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum Token<T> {
     Group(Alt<T>, Repetition),
-    Optional(Alt<T>),
     Definition(T),
     Argument(Argument<T>),
 }
@@ -67,99 +66,88 @@ parser! {
     }
 }
 
-parser! {
-    fn repetition[I]()(I) -> Repetition
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        optional(choice((
-            char('+').map(|_| Repetition::Multiple),
-            char('*').map(|_| Repetition::Any),
-            char('?').map(|_| Repetition::Optional),
-        ))).map(|result| result.unwrap_or(Repetition::Once))
-    }
+fn repetition<I>() -> impl Parser<Input = I, Output = Repetition>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Default,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    char('+').map(|_| Repetition::Multiple).or(char('*').map(|_| Repetition::Any))
 }
 
-parser! {
-    fn token[I]()(I) -> Token<I::Range>
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        between(spaces(), spaces(), choice((
-            (
-                between(char('('), char(')'), alt()),
-                repetition()
-            ).map(|(group, repetition)| Token::Group(group, repetition)),
-            between(char('['), char(']'), alt()).map(Token::Optional),
+fn token<I>() -> impl Parser<Input = I, Output = Token<I::Range>>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Default,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    between(
+        spaces(),
+        spaces(),
+        choice((
+            (between(char('('), char(')'), alt()), optional(repetition())).map(
+                |(group, repetition)| Token::Group(group, repetition.unwrap_or(Repetition::Once)),
+            ),
+            between(char('['), char(']'), alt())
+                .map(|group| Token::Group(group, Repetition::Optional)),
             char('$').with(word()).map(Token::Definition),
             argument().map(Token::Argument),
-        )))
-    }
+        )),
+    )
 }
 
-parser! {
-    fn sequence[I]()(I) -> Vec<Token<I::Range>>
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        sep_by1(token(), string("=>"))
-    }
+fn sequence<I>() -> impl Parser<Input = I, Output = Vec<Token<I::Range>>>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Default,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    sep_by1(token(), string("=>"))
 }
 
-parser! {
-    fn argument[I]()(I) -> Argument<I::Range>
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        (
-            optional_word(),
-            optional(many1((between(char('<'), char('>'), word()), optional_word())))
-        ).map(|(literal, reference)| Argument::new(literal, reference))
-    }
+fn argument<I>() -> impl Parser<Input = I, Output = Argument<I::Range>>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Default,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    (optional_word(), optional(many1((between(char('<'), char('>'), word()), optional_word()))))
+        .map(|(literal, reference)| Argument::new(literal, reference))
 }
 
-parser! {
-    fn optional_word[I]()(I) -> I::Range
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        optional(word()).map(|word| word.unwrap_or_else(I::Range::default))
-    }
+fn optional_word<I>() -> impl Parser<Input = I, Output = I::Range>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Default,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    optional(word()).map(|word| word.unwrap_or_else(I::Range::default))
 }
 
-parser! {
-    fn word[I]()(I) -> I::Range
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/')
-    }
+fn word<I>() -> impl Parser<Input = I, Output = I::Range>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/')
 }
 
-parser! {
-    fn arg_choice['a, I](descs: &'a [I::Range])(I) -> (super::completion::Argument<I::Range>, super::completion::Choice)
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + combine::parser::combinator::StrLike + Default + Ord,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        (
-            argument(),
-            optional(between(string(" ["), char(']'), word())),
-            optional(between(string(" ("), char(')'), sentinel())),
-        ).map(|(name, desc, sentinel)| {
+fn arg_choice<'a, I: 'a>(
+    descs: &'a [I::Range],
+) -> impl Parser<Input = I, Output = (super::completion::Argument<I::Range>, super::completion::Choice)>
+         + 'a
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + combine::parser::combinator::StrLike + Default + Ord,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    (
+        argument(),
+        optional(between(string(" ["), char(']'), word())),
+        optional(between(string(" ("), char(')'), sentinel())),
+    )
+        .map(move |(name, desc, sentinel)| {
             (
                 name,
                 super::completion::Choice::new(
@@ -168,60 +156,54 @@ parser! {
                 ),
             )
         })
-    }
 }
 
-parser! {
-    fn sentinel[I]()(I) -> Sentinel
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        (
-            from_str(take_while1(|c: char| c.is_digit(10))),
-            char(';'),
-            optional(guard_check()),
-            char(';'),
-            optional(guard_assignment())
-        ).map(|(counter, _, test, _, change)| Sentinel::new(counter, test, change))
-    }
+fn sentinel<I>() -> impl Parser<Input = I, Output = Sentinel>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    (
+        from_str(take_while1(|c: char| c.is_digit(10))),
+        char(';'),
+        optional(guard_check()),
+        char(';'),
+        optional(guard_assignment()),
+    )
+        .map(|(counter, _, test, _, change)| Sentinel::new(counter, test, change))
 }
 
-parser! {
-    fn guard_check[I]()(I) -> (Ordering, u8)
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        (
-            choice((
-                char('=').map(|_| Ordering::Equal),
-                char('>').map(|_| Ordering::Greater),
-                char('<').map(|_| Ordering::Less)
-            )),
-            from_str(take_while1(|c: char| c.is_digit(10))),
-        )
-    }
+fn guard_check<I>() -> impl Parser<Input = I, Output = (Ordering, u8)>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    (
+        choice((
+            char('=').map(|_| Ordering::Equal),
+            char('>').map(|_| Ordering::Greater),
+            char('<').map(|_| Ordering::Less),
+        )),
+        from_str(take_while1(|c: char| c.is_digit(10))),
+    )
 }
 
-parser! {
-    fn guard_assignment[I]()(I) -> (Operator, u8)
-    where [
-        I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-    ] {
-        (
-            choice((
-                char('=').map(|_| Operator::Set),
-                char('-').map(|_| Operator::Dec),
-                char('+').map(|_| Operator::Inc)
-            )),
-            from_str(take_while1(|c: char| c.is_digit(10))),
-        )
-    }
+fn guard_assignment<I>() -> impl Parser<Input = I, Output = (Operator, u8)>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    (
+        choice((
+            char('=').map(|_| Operator::Set),
+            char('-').map(|_| Operator::Dec),
+            char('+').map(|_| Operator::Inc),
+        )),
+        from_str(take_while1(|c: char| c.is_digit(10))),
+    )
 }
 
 impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> {
