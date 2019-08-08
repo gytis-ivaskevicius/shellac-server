@@ -2,8 +2,8 @@ use std::{
     borrow::Borrow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
-    convert::{TryFrom, TryInto},
-    fmt::Debug,
+    convert::TryFrom,
+    fmt::{self, Debug, Display, Formatter},
 };
 
 use combine::{
@@ -16,7 +16,7 @@ use combine::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::completion::{Argument, Operator, Sentinel, Step};
+use super::completion::{self, Argument, Operator, Sentinel, Step};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Definition {
@@ -26,6 +26,43 @@ pub struct Definition {
     sections:    Definitions,
     definitions: BTreeMap<String, String>,
     desc:        BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Regex(regex::Error),
+    Parsing(Errors<char, String, combine::stream::state::SourcePosition>),
+    TooMuchSteps(usize),
+    UndefinedDescription(String),
+}
+
+impl std::error::Error for Error {}
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Regex(cause) => write!(f, "Invalid regex: {}", cause),
+            Error::Parsing(err) => write!(f, "Invalid syntax: {}", err),
+            Error::TooMuchSteps(size) => write!(
+                f,
+                "The number of steps for completion is too highh: {}. Please split the definition \
+                 into a separate file",
+                size
+            ),
+            Error::UndefinedDescription(desc) => {
+                write!(f, "Reference to unknown description '{}'", desc)
+            }
+        }
+    }
+}
+
+impl From<regex::Error> for Error {
+    fn from(cause: regex::Error) -> Self { Error::Regex(cause) }
+}
+
+impl From<Errors<char, &str, combine::stream::state::SourcePosition>> for Error {
+    fn from(cause: Errors<char, &str, combine::stream::state::SourcePosition>) -> Self {
+        Error::Parsing(cause.map_range(ToOwned::to_owned))
+    }
 }
 
 type Definitions = HashMap<String, Arg>;
@@ -139,7 +176,7 @@ where
 
 fn arg_choice<'a, 'b: 'a, I: 'a, O: 'b, T: 'b, S>(
     descs: &'a [S],
-) -> impl Parser<Input = I, Output = (super::completion::Argument<O>, super::completion::Choice)> + 'a
+) -> impl Parser<Input = I, Output = (completion::Argument<O>, completion::Choice)> + 'a
 where
     O: From<I::Range> + Default,
     S: Borrow<T> + 'b,
@@ -157,9 +194,7 @@ where
         spaces(),
         optional(between(char('('), char(')'), sentinel())),
     )
-        .map(move |(name, _, desc, _, sentinel)| {
-            (name, super::completion::Choice::new(desc, sentinel))
-        })
+        .map(move |(name, _, desc, _, sentinel)| (name, completion::Choice::new(desc, sentinel)))
 }
 
 fn sentinel<I>() -> impl Parser<Input = I, Output = Sentinel>
@@ -210,23 +245,23 @@ where
     )
 }
 
-impl TryFrom<Definition> for super::completion::Definition<String> {
-    type Error = regex::Error;
+impl TryFrom<Definition> for completion::Definition<String> {
+    type Error = Error;
 
     fn try_from(def: Definition) -> Result<Self, Self::Error> {
         if def.version != 0 {
             panic!("wrong version");
         }
         let (keys, descriptions): (Vec<_>, Vec<_>) = def.desc.into_iter().unzip();
-        let steps = alt().easy_parse(State::new(def.arguments.as_str())).unwrap().0;
-        let mut steps = resolve(steps, 0, &def.sections, keys.as_slice());
+        let steps = alt().easy_parse(State::new(def.arguments.as_str()))?.0;
+        let mut steps = resolve(steps, 0, &def.sections, keys.as_slice())?;
         steps.push(Step::Match); // Last token is always match
 
         Ok(Self { num_counters: def.counters, descriptions, steps })
     }
 }
 
-impl<'a, O> TryFrom<&'a str> for super::completion::Argument<O>
+impl<'a, O> TryFrom<&'a str> for completion::Argument<O>
 where
     O: From<&'a str> + Default + Ord,
 {
@@ -237,7 +272,7 @@ where
     }
 }
 
-impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
+impl<'a> TryFrom<&'a str> for completion::Sentinel {
     type Error = Errors<char, &'a str, SourcePosition>;
 
     fn try_from(arg: &'a str) -> Result<Self, Self::Error> {
@@ -245,12 +280,12 @@ impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
     }
 }
 
-impl<'a, 'b: 'a, S: 'a, O: 'a> TryFrom<(&'a Arg, &'b [S])> for super::completion::Arg<O>
+impl<'a, 'b: 'a, S: 'a, O: 'a> TryFrom<(&'a Arg, &'b [S])> for completion::Arg<O>
 where
     O: From<&'a str> + Default + Ord,
     S: Borrow<str> + 'a,
 {
-    type Error = regex::Error;
+    type Error = Error;
 
     fn try_from((arg, descs): (&'a Arg, &'b [S])) -> Result<Self, Self::Error> {
         Ok(Self::new(
@@ -260,8 +295,7 @@ where
                 .map(|choice| {
                     arg_choice(descs).easy_parse(State::new(choice.as_str())).map(|(arg, _)| arg)
                 })
-                .collect::<Result<_, _>>()
-                .unwrap(),
+                .collect::<Result<_, _>>()?,
         ))
     }
 }
@@ -272,14 +306,16 @@ fn resolve<'a, 'b, T, S>(
     mut idx: u8,
     defs: &'a Definitions,
     descs: &'b [S],
-) -> Vec<Step<T>>
+) -> Result<Vec<Step<T>>, Error>
 where
     T: AsRef<str> + Ord + 'a,
-    super::completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
-    <super::completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+    completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
+    <completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+    Error: From<<completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error>,
 {
     match alt.len() {
-        0 => Vec::new(),
+        0 => Ok(Vec::new()),
+        // Since the length is one, the unwrap can't fail
         1 => seq_to_vec(alt.pop().unwrap(), idx, defs, descs),
         _ => {
             let mut steps = Vec::with_capacity(2 * alt.len());
@@ -291,8 +327,10 @@ where
             steps.push(Step::Jump(idx));
             steps.push(Step::Jump(0));
             while let Some(seq) = alt.next() {
-                let extra_steps = seq_to_vec(seq, idx, defs, descs);
-                idx += u8::try_from(extra_steps.len()).unwrap() + 2;
+                let extra_steps = seq_to_vec(seq, idx, defs, descs)?;
+                idx += u8::try_from(extra_steps.len())
+                    .map_err(|_| Error::TooMuchSteps(extra_steps.len()))?
+                    + 2;
                 if alt.size_hint().0 != 0 {
                     steps.push(Step::Split(idx));
                 }
@@ -304,7 +342,7 @@ where
             if let Some(Step::Jump(ref mut matching)) = steps.get_mut(1) {
                 *matching = idx - 2;
             }
-            steps
+            Ok(steps)
         }
     }
 }
@@ -314,42 +352,49 @@ fn seq_to_vec<'a, 'b, T, S>(
     idx: u8,
     defs: &'a Definitions,
     descs: &'b [S],
-) -> Vec<Step<T>>
+) -> Result<Vec<Step<T>>, Error>
 where
     T: AsRef<str> + Ord + 'a,
-    super::completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
-    <super::completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+    completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
+    <completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+    Error: From<<completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error>,
 {
     let mut steps = Vec::with_capacity(seq.len());
     for token in seq {
-        let start = idx + u8::try_from(steps.len()).unwrap();
+        let start =
+            idx + u8::try_from(steps.len()).map_err(|_| Error::TooMuchSteps(steps.len()))?;
         match token {
-            Token::Argument(arg) => steps.push(Step::Check(super::completion::Arg::new(
+            Token::Argument(arg) => steps.push(Step::Check(completion::Arg::new(
                 None,
-                vec![(arg, super::completion::Choice::new(None, None))].into_iter().collect(),
+                vec![(arg, completion::Choice::new(None, None))].into_iter().collect(),
             ))),
-            Token::Group(alt, Repetition::Once) => steps.extend(resolve(alt, start, defs, descs)),
+            Token::Group(alt, Repetition::Once) => steps.extend(resolve(alt, start, defs, descs)?),
             Token::Group(alt, Repetition::Optional) => {
-                let extra_steps = resolve(alt, start + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs)?;
                 steps.push(Step::Split(start + extra_steps.len() as u8 + 1));
                 steps.extend(extra_steps);
             }
             Token::Group(alt, Repetition::Any) => {
-                let extra_steps = resolve(alt, start + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs)?;
                 steps.push(Step::Split(start + extra_steps.len() as u8 + 2));
                 steps.extend(extra_steps);
                 steps.push(Step::Split(start + 1));
             }
             Token::Group(alt, Repetition::Multiple) => {
-                let extra_steps = resolve(alt, start + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs)?;
                 steps.extend(extra_steps);
                 steps.push(Step::Split(start));
             }
-            Token::Definition(def) => steps
-                .push(Step::Check((defs.get(def.as_ref()).unwrap(), descs).try_into().unwrap())),
+            Token::Definition(def) => {
+                let def = defs
+                    .get(def.as_ref())
+                    .ok_or_else(|| Error::UndefinedDescription(def.as_ref().to_string()))?;
+                let step = completion::Arg::try_from((def, descs))?;
+                steps.push(Step::Check(step))
+            }
         }
     }
-    steps
+    Ok(steps)
 }
 
 #[cfg(test)]
@@ -470,7 +515,7 @@ mod test {
             Ok((
                 (
                     Argument::new("f", None),
-                    super::super::completion::Choice::new(
+                    completion::Choice::new(
                         Some(1),
                         Some(Sentinel::new(
                             1,

@@ -17,7 +17,7 @@ pub enum Error {
     Io(io::Error),
     FileNotUtf8(FromUtf8Error),
     WordOutOfRange(usize, usize),
-    DocOpt(String),
+    Parser(parser::Error),
 }
 
 impl From<io::Error> for Error {
@@ -28,8 +28,11 @@ impl From<FromUtf8Error> for Error {
     fn from(cause: FromUtf8Error) -> Self { Error::FileNotUtf8(cause) }
 }
 
-impl std::error::Error for Error {}
+impl From<parser::Error> for Error {
+    fn from(cause: parser::Error) -> Self { Error::Parser(cause) }
+}
 
+impl std::error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -40,9 +43,7 @@ impl fmt::Display for Error {
                 word, len
             ),
             Error::FileNotUtf8(err) => write!(f, "The completion file is not valid utf8: {}", err),
-            Error::DocOpt(err) => {
-                write!(f, "The completion file contained an invalid docopt format: {}", err)
-            }
+            Error::Parser(err) => write!(f, "The completion file was invalid: {}", err),
         }
     }
 }

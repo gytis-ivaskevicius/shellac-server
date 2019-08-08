@@ -85,7 +85,7 @@ fn handle_client<R: Read, W: Write>(
 
                 let mut file = File::open(path)?;
                 let def = serde_yaml::from_reader::<_, parser::Definition>(&mut file).unwrap();
-                let def = Definition::try_from(def).unwrap();
+                let def = Definition::try_from(def)?;
                 let start = Instant::now();
                 let choices = VMSearcher::new(&def, &request).choices();
                 eprintln!("Time elapsed: {:?}", start.elapsed());
@@ -115,20 +115,20 @@ fn main() {
             match stream {
                 Ok(stream) => {
                     let cache = cache.clone();
-                    thread::spawn(move || match handle_client(&stream, &stream, &cache) {
-                        Ok(()) => eprintln!("Socket closed"),
-                        Err(err) => eprintln!("Could not execute request: {}", err),
+                    thread::spawn(move || {
+                        if let Err(err) = handle_client(&stream, &stream, &cache) {
+                            eprintln!("Could not execute request: {}", err)
+                        }
                     });
                 }
                 Err(err) => {
                     eprintln!("Could not accept socket request {}", err);
-                    break;
+                    std::process::exit(1);
                 }
             }
         }
-    } else {
-        if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock(), &cache) {
-            eprintln!("Could not execute request: {}", err);
-        }
+    } else if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock(), &cache) {
+        eprintln!("Could not execute request: {}", err);
+        std::process::exit(1);
     }
 }

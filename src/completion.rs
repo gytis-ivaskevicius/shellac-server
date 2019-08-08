@@ -109,7 +109,7 @@ impl<T> Argument<T> {
 }
 
 impl<T: AsRef<str>> Argument<T> {
-    pub fn resolve<'a, O: From<T> + Default + std::fmt::Write>(
+    pub fn resolve<O: From<T> + Default + std::fmt::Write>(
         &self,
         start: &str,
     ) -> Result<ChoiceResolver<O>, std::fmt::Error> {
