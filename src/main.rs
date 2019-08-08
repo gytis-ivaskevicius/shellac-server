@@ -84,10 +84,7 @@ fn handle_client<R: Read, W: Write>(
                 let path = get_comp_file(name)?;
 
                 let mut file = File::open(path)?;
-                let mut content = String::with_capacity(1024);
-                file.read_to_string(&mut content)?;
-
-                let def = serde_yaml::from_str::<parser::Definition>(&content).unwrap();
+                let def = serde_yaml::from_reader::<_, parser::Definition>(&mut file).unwrap();
                 let def = Definition::try_from(def).unwrap();
                 let start = Instant::now();
                 let choices = VMSearcher::new(&def, &request).choices();
