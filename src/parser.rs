@@ -1,7 +1,9 @@
 use std::{
+    borrow::Borrow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
     convert::{TryFrom, TryInto},
+    fmt::Debug,
 };
 
 use combine::{
@@ -58,10 +60,11 @@ struct Choice {
 
 // Keep the parser because this is a recursive type
 parser! {
-    fn alt[I]()(I) -> Alt<I::Range>
+    fn alt[I, O]()(I) -> Alt<O>
     where [
+        O: From<I::Range> + Default,
         I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
+        I::Range: combine::stream::Range,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
         sep_by1(sequence(), string("|"))
@@ -70,17 +73,16 @@ parser! {
 
 fn repetition<I>() -> impl Parser<Input = I, Output = Repetition>
 where
-    I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I: Stream<Item = char>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     choice!(char('+').map(|_| Repetition::Multiple), char('*').map(|_| Repetition::Any))
 }
 
-fn token<I>() -> impl Parser<Input = I, Output = Token<I::Range>>
+fn token<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = Token<O>>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     between(
@@ -98,67 +100,65 @@ where
     )
 }
 
-fn sequence<I>() -> impl Parser<Input = I, Output = Vec<Token<I::Range>>>
+fn sequence<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = Vec<Token<O>>>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     sep_by1(token(), string("=>"))
 }
 
-fn argument<I>() -> impl Parser<Input = I, Output = Argument<I::Range>>
+fn argument<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = Argument<O>>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (optional_word(), optional(many1((between(char('<'), char('>'), word()), optional_word()))))
         .map(|(literal, reference)| Argument::new(literal, reference))
 }
 
-fn optional_word<I>() -> impl Parser<Input = I, Output = I::Range>
-where
-    I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
-    I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    optional(word()).map(|word| word.unwrap_or_else(I::Range::default))
-}
-
-fn word<I>() -> impl Parser<Input = I, Output = I::Range>
+fn optional_word<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = O>
 where
     I: Stream<Item = char> + RangeStream,
     I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/')
+    optional(word()).map(|word| word.unwrap_or_else(O::default))
 }
 
-fn arg_choice<'a, I: 'a>(
-    descs: &'a [I::Range],
-) -> impl Parser<Input = I, Output = (super::completion::Argument<I::Range>, super::completion::Choice)>
-         + 'a
+fn word<I, O: From<I::Range>>() -> impl Parser<Input = I, Output = O>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + combine::parser::combinator::StrLike + Default + Ord,
+    I::Range: combine::stream::Range,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/').map(Into::into)
+}
+
+fn arg_choice<'a, 'b: 'a, I: 'a, O: 'b, T: 'b, S>(
+    descs: &'a [S],
+) -> impl Parser<Input = I, Output = (super::completion::Argument<O>, super::completion::Choice)> + 'a
+where
+    O: From<I::Range> + Default,
+    S: Borrow<T> + 'b,
+    T: Ord + ?Sized,
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Into<&'a T> + Ord + combine::parser::combinator::StrLike,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
         argument(),
         spaces(),
-        optional(between(string("["), char(']'), word())),
+        optional(between(char('['), char(']'), word::<_, I::Range>())).map(move |desc| {
+            desc.and_then(|desc| descs.binary_search_by_key(&desc.into(), |s| s.borrow()).ok())
+        }),
         spaces(),
-        optional(between(string("("), char(')'), sentinel())),
+        optional(between(char('('), char(')'), sentinel())),
     )
         .map(move |(name, _, desc, _, sentinel)| {
-            (
-                name,
-                super::completion::Choice::new(
-                    desc.and_then(|desc| descs.binary_search(&desc).ok()),
-                    sentinel,
-                ),
-            )
+            (name, super::completion::Choice::new(desc, sentinel))
         })
 }
 
@@ -210,7 +210,7 @@ where
     )
 }
 
-impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> {
+impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, String> {
     type Error = regex::Error;
 
     fn try_from(def: &'a Definition) -> Result<Self, Self::Error> {
@@ -227,7 +227,10 @@ impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> 
     }
 }
 
-impl<'a> TryFrom<&'a str> for super::completion::Argument<&'a str> {
+impl<'a, O> TryFrom<&'a str> for super::completion::Argument<O>
+where
+    O: From<&'a str> + Default + Ord,
+{
     type Error = Errors<char, &'a str, SourcePosition>;
 
     fn try_from(arg: &'a str) -> Result<Self, Self::Error> {
@@ -243,10 +246,14 @@ impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
     }
 }
 
-impl<'a, 'b> TryFrom<(&'a Arg, &'b [&'a str])> for super::completion::Arg<&'a str> {
+impl<'a, 'b: 'a, S: 'a, O: 'a> TryFrom<(&'a Arg, &'b [S])> for super::completion::Arg<O>
+where
+    O: From<&'a str> + Default + Ord,
+    S: Borrow<str> + 'a,
+{
     type Error = regex::Error;
 
-    fn try_from((arg, descs): (&'a Arg, &'b [&'a str])) -> Result<Self, Self::Error> {
+    fn try_from((arg, descs): (&'a Arg, &'b [S])) -> Result<Self, Self::Error> {
         Ok(Self::new(
             arg.regex.as_ref().map(|regex| Regex::new(regex)).transpose()?,
             arg.choices
@@ -261,12 +268,17 @@ impl<'a, 'b> TryFrom<(&'a Arg, &'b [&'a str])> for super::completion::Arg<&'a st
 }
 
 // TODO: Remove debug
-fn resolve<'a, 'b>(
-    mut alt: Alt<&'a str>,
+fn resolve<'a, 'b, T, S>(
+    mut alt: Alt<T>,
     mut idx: u8,
     defs: &'a Definitions,
-    descs: &'b [&'a str],
-) -> Vec<Step<&'a str>> {
+    descs: &'b [S],
+) -> Vec<Step<T>>
+where
+    T: AsRef<str> + Ord + 'a,
+    super::completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
+    <super::completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+{
     match alt.len() {
         0 => Vec::new(),
         1 => seq_to_vec(alt.pop().unwrap(), idx, defs, descs),
@@ -281,7 +293,7 @@ fn resolve<'a, 'b>(
             steps.push(Step::Jump(0));
             while let Some(seq) = alt.next() {
                 let extra_steps = seq_to_vec(seq, idx, defs, descs);
-                idx += extra_steps.len() as u8 + 2;
+                idx += u8::try_from(extra_steps.len()).unwrap() + 2;
                 if alt.size_hint().0 != 0 {
                     steps.push(Step::Split(idx));
                 }
@@ -298,15 +310,20 @@ fn resolve<'a, 'b>(
     }
 }
 
-fn seq_to_vec<'a, 'b>(
-    seq: Vec<Token<&'a str>>,
+fn seq_to_vec<'a, 'b, T, S>(
+    seq: Vec<Token<T>>,
     idx: u8,
     defs: &'a Definitions,
-    descs: &'b [&'a str],
-) -> Vec<Step<&'a str>> {
+    descs: &'b [S],
+) -> Vec<Step<T>>
+where
+    T: AsRef<str> + Ord + 'a,
+    super::completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
+    <super::completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+{
     let mut steps = Vec::with_capacity(seq.len());
     for token in seq {
-        let start = idx + steps.len() as u8;
+        let start = idx + u8::try_from(steps.len()).unwrap();
         match token {
             Token::Argument(arg) => steps.push(Step::Check(super::completion::Arg::new(
                 None,
@@ -329,9 +346,8 @@ fn seq_to_vec<'a, 'b>(
                 steps.extend(extra_steps);
                 steps.push(Step::Split(start));
             }
-            Token::Definition(def) => {
-                steps.push(Step::Check((defs.get(def).unwrap(), descs).try_into().unwrap()))
-            }
+            Token::Definition(def) => steps
+                .push(Step::Check((defs.get(def.as_ref()).unwrap(), descs).try_into().unwrap())),
         }
     }
     steps

@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use regex::Regex;
 use retain_mut::RetainMut;
 
@@ -107,28 +108,23 @@ impl<T> Argument<T> {
     }
 }
 
-impl<'a> Argument<&'a str> {
-    pub fn to_owned(&self) -> Argument<String> {
-        Argument {
-            literal:   self.literal.to_owned(),
-            reference: self
-                .reference
-                .as_ref()
-                .map(|refs| refs.iter().map(|(r, f)| (r.to_string(), f.to_string())).collect()),
-        }
-    }
-}
-
-impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
-    pub fn resolve(&self, start: &str) -> ChoiceResolver<String> {
+impl<T: AsRef<str>> Argument<T> {
+    pub fn resolve<'a, O: From<T> + Default + std::fmt::Write>(
+        &self,
+        start: &str,
+    ) -> Result<ChoiceResolver<O>, std::fmt::Error> {
         match &self.reference {
             None if self.literal.as_ref().starts_with(start) => {
-                ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
+                let mut out = O::default();
+                out.write_str(self.literal.as_ref())?;
+                Ok(ChoiceResolver::Literal(std::iter::once(out)))
             }
             Some(reference) => {
                 let literal = self.literal.as_ref();
                 if literal != start && literal.starts_with(start) {
-                    ChoiceResolver::Literal(std::iter::once(self.literal.to_string()))
+                    let mut out = O::default();
+                    out.write_str(self.literal.as_ref())?;
+                    Ok(ChoiceResolver::Literal(std::iter::once(out)))
                 } else if start.starts_with(literal) {
                     // if reference == "file" {
                     // let file_start = start.trim_start_matches(self.literal);
@@ -149,16 +145,22 @@ impl<T: AsRef<str> + ToString + std::fmt::Debug> Argument<T> {
                     // .into_iter(),
                     // )
                     // } else {
-                    ChoiceResolver::Literal(std::iter::once(format!(
-                        "{}<{:?}>",
-                        literal, reference
-                    )))
+                    let mut out = O::default();
+                    write!(
+                        &mut out,
+                        "{}{}",
+                        literal,
+                        reference.iter().format_with("", |(reference, postfix), f| f(
+                            &format_args!("<{}>{}", reference.as_ref(), postfix.as_ref())
+                        ))
+                    )?;
+                    Ok(ChoiceResolver::Literal(std::iter::once(out)))
                 // }
                 } else {
-                    ChoiceResolver::None
+                    Ok(ChoiceResolver::None)
                 }
             }
-            _ => ChoiceResolver::None,
+            _ => Ok(ChoiceResolver::None),
         }
     }
 }
@@ -191,7 +193,10 @@ impl<T: Ord> Arg<T> {
     }
 }
 
-impl<T: Ord + AsRef<str> + std::fmt::Debug + ToString> Arg<T> {
+impl<T: Ord + AsRef<str>> Arg<T>
+where
+    String: From<T>,
+{
     pub fn resolve(&self, results: &mut Vec<String>, arg: &str, counters: &[u8]) {
         if let Some(regex) = &self.regex {
             let len = arg.len();
@@ -208,7 +213,7 @@ impl<T: Ord + AsRef<str> + std::fmt::Debug + ToString> Arg<T> {
                             .keys()
                             .any(|key| capture.as_str().starts_with(key.literal().as_ref()))
                     }) {
-                        results.push(test.clone());
+                        results.push((&test).into());
                     }
                 }
             }
@@ -239,7 +244,7 @@ impl<T: Ord + AsRef<str> + std::fmt::Debug + ToString> Arg<T> {
                 self.choices
                     .iter()
                     .filter(|(_, desc)| desc.check(counters))
-                    .flat_map(|(choice, _)| choice.resolve(arg)),
+                    .flat_map(|(choice, _)| choice.resolve(arg).unwrap()),
             )
         }
     }
@@ -282,11 +287,16 @@ impl Searcher {
     pub fn step(&mut self) { self.step += 1; }
 }
 
-impl<'a, T: ToString + std::fmt::Debug + AsRef<str> + Ord> VMSearcher<'a, T> {
+impl<'a, T: Ord> VMSearcher<'a, T> {
     pub fn new(def: &'a Definition<T>, args: &'a AutocompRequest) -> Self {
         Self { def, stack: vec![Searcher::new(def.num_counters, 0)], args }
     }
+}
 
+impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T>
+where
+    String: From<T>,
+{
     pub fn choices(mut self) -> Result<Vec<String>, Error> {
         for (i, arg) in self.args.argv().iter().enumerate().skip(1) {
             // Advance to the next argument
