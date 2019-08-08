@@ -20,6 +20,7 @@ structopt = "0.2"
 retain_mut = "0.1"
 combine = "3"
 itertools = "0.8"
+lru = "0.1"
 
 [build-dependencies]
 capnpc = "0.10"

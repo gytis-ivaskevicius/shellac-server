@@ -210,15 +210,14 @@ where
     )
 }
 
-impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, String> {
+impl TryFrom<Definition> for super::completion::Definition<String> {
     type Error = regex::Error;
 
-    fn try_from(def: &'a Definition) -> Result<Self, Self::Error> {
+    fn try_from(def: Definition) -> Result<Self, Self::Error> {
         if def.version != 0 {
             panic!("wrong version");
         }
-        let (keys, descriptions): (Vec<_>, Vec<_>) =
-            def.desc.iter().map(|(a, b)| (a.as_str(), b)).unzip();
+        let (keys, descriptions): (Vec<_>, Vec<_>) = def.desc.into_iter().unzip();
         let steps = alt().easy_parse(State::new(def.arguments.as_str())).unwrap().0;
         let mut steps = resolve(steps, 0, &def.sections, keys.as_slice());
         steps.push(Step::Match); // Last token is always match

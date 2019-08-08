@@ -20,11 +20,11 @@ pub enum Step<T: Ord> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Definition<'a, T: Ord> {
+pub struct Definition<T: Ord> {
     pub steps:        Vec<Step<T>>,
     pub num_counters: u8,
-    pub descriptions: Vec<&'a BTreeMap<String, String>>, /* A HashMap is clearer, but a vec is
-                                                          * faster */
+    pub descriptions: Vec<BTreeMap<String, String>>, /* A HashMap is clearer, but a vec is
+                                                      * faster */
 }
 
 #[derive(Debug, Clone, Default)]
@@ -76,7 +76,7 @@ pub enum ChoiceResolver<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VMSearcher<'a, T: Ord> {
-    def:   &'a Definition<'a, T>,
+    def:   &'a Definition<T>,
     stack: Vec<Searcher>,
     args:  &'a AutocompRequest,
 }

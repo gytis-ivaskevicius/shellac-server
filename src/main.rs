@@ -9,9 +9,11 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     thread,
 };
 
+use lru::LruCache;
 use serde_json::Deserializer;
 use structopt::StructOpt;
 
@@ -48,7 +50,11 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
     Ok(path.with_extension("shellac"))
 }
 
-fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_server::Error> {
+fn handle_client<R: Read, W: Write>(
+    reader: R,
+    writer: W,
+    cache: &Mutex<LruCache<String, Definition<String>>>,
+) -> Result<(), shellac_server::Error> {
     use std::time::Instant;
 
     let mut writer = BufWriter::new(writer);
@@ -58,26 +64,49 @@ fn handle_client<R: Read, W: Write>(reader: R, writer: W) -> Result<(), shellac_
     {
         let request = request.unwrap();
         let start = Instant::now();
-        let path = get_comp_file(&request.argv()[0])?;
+        let name = &request.argv()[0];
+        let mut lock = match cache.lock() {
+            Ok(v) => v,
+            Err(_err) => {
+                eprintln!("Mutex poisoned, could not access cache");
+                std::process::exit(1);
+            }
+        };
+        let choices = match lock.get(name) {
+            Some(def) => {
+                let start = Instant::now();
+                let choices = VMSearcher::new(def, &request).choices();
+                eprintln!("Time elapsed: {:?}", start.elapsed());
+                std::mem::drop(lock);
+                choices
+            }
+            None => {
+                let path = get_comp_file(name)?;
 
-        let mut file = File::open(path)?;
-        let mut content = String::with_capacity(1024);
-        file.read_to_string(&mut content)?;
+                let mut file = File::open(path)?;
+                let mut content = String::with_capacity(1024);
+                file.read_to_string(&mut content)?;
 
-        let def = serde_yaml::from_str::<parser::Definition>(&content).unwrap();
-        let def = Definition::try_from(&def).unwrap();
-        let start2 = Instant::now();
-        let choices = VMSearcher::new(&def, &request).choices().unwrap();
-        let duration2 = start2.elapsed();
-        let duration = start.elapsed();
+                let def = serde_yaml::from_str::<parser::Definition>(&content).unwrap();
+                let def = Definition::try_from(def).unwrap();
+                let start = Instant::now();
+                let choices = VMSearcher::new(&def, &request).choices();
+                eprintln!("Time elapsed: {:?}", start.elapsed());
+                lock.put(name.to_string(), def);
+                std::mem::drop(lock);
+                choices
+            }
+        }
+        .unwrap();
         serde_json::to_writer(&mut writer, &choices).unwrap();
-        eprintln!("Time elapsed: {:?}, {:?}", duration2, duration);
+        eprintln!("Time elapsed: {:?}", start.elapsed());
     }
     Ok(())
 }
 
 fn main() {
     let opts = Opts::from_args();
+    let cache = Arc::new(Mutex::new(LruCache::new(20)));
 
     if let Some(path) = opts.socket {
         let listener = UnixListener::bind(&path).unwrap_or_else(|_| {
@@ -88,7 +117,8 @@ fn main() {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    thread::spawn(move || match handle_client(&stream, &stream) {
+                    let cache = cache.clone();
+                    thread::spawn(move || match handle_client(&stream, &stream, &cache) {
                         Ok(()) => eprintln!("Socket closed"),
                         Err(err) => eprintln!("Could not execute request: {}", err),
                     });
@@ -100,7 +130,7 @@ fn main() {
             }
         }
     } else {
-        if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock()) {
+        if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock(), &cache) {
             eprintln!("Could not execute request: {}", err);
         }
     }
