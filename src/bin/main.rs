@@ -1,22 +1,13 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 
-mod completion;
-mod parser;
-mod types;
-
-// Codec definition
-#[allow(dead_code)]
-mod shellac_capnp {
-    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
-}
-
-use self::{
+use shellac::{
+    codec,
     completion::{Definition, VMSearcher},
-    types::Error,
+    parser, Error,
 };
 
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, ErrorKind, Write},
     os::unix::net::UnixListener,
@@ -26,10 +17,6 @@ use std::{
     time::Instant,
 };
 
-use capnp::{
-    message::{self, ReaderOptions},
-    serialize_packed as capn_serialize,
-};
 use lru::LruCache;
 use structopt::StructOpt;
 
@@ -74,60 +61,45 @@ fn handle_client<R: BufRead, W: Write>(
     let mut writer = BufWriter::new(writer);
     // Check if another request was made
     while !reader.fill_buf()?.is_empty() {
-        let request = capn_serialize::read_message(&mut reader, ReaderOptions::default())?;
-        let request = request.get_root::<shellac_capnp::request::Reader>()?;
-
-        let argv = request.get_argv()?;
-        let word = request.get_word();
-
-        if word as u32 > argv.len() {
-            eprintln!("Can't autocomplete word {} in argv of length {}", word, argv.len());
-            continue;
-        }
-        let start = Instant::now();
-        let name = argv.get(0)?;
-        let mut lock = cache.lock()?;
-
-        // Name should not need to be converted to a String, but the LRU cache requires it for some
-        // reason.
-        let choices = if let Some(def) = lock.get(&name.to_string()) {
+        if let Err(err) = codec::read_request(&mut reader, |_word, argv, request| {
             let start = Instant::now();
-            let choices = VMSearcher::new(def).choices(&request)?;
-            eprintln!("Time elapsed: {:?}", start.elapsed());
-            std::mem::drop(lock);
-            choices
-        } else {
-            let path = get_comp_file(name)?;
+            let name = argv.get(0)?;
+            let mut lock = cache.lock()?;
 
-            let mut file = File::open(path)?;
-            let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
-                Ok(d) => d,
-                Err(err) => {
-                    eprintln!("Failed to parse definition file for '{}': {}", name, err);
-                    continue;
-                }
+            // Name should not need to be converted to a String, but the LRU cache requires it for
+            // some reason.
+            let choices = if let Some(def) = lock.get(&name.to_string()) {
+                let start = Instant::now();
+                let choices = VMSearcher::new(def).choices(request)?;
+                eprintln!("Time elapsed: {:?}", start.elapsed());
+                std::mem::drop(lock);
+                choices
+            } else {
+                let path = get_comp_file(name)?;
+
+                let mut file = File::open(path)?;
+                let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
+                    Ok(d) => d,
+                    Err(err) => {
+                        eprintln!("Failed to parse definition file for '{}': {}", name, err);
+                        // TODO: return proper error
+                        return Ok(());
+                    }
+                };
+                let def = Definition::try_from(def)?;
+                let start = Instant::now();
+                let choices = VMSearcher::new(&def).choices(request)?;
+                eprintln!("Time elapsed: {:?}", start.elapsed());
+                lock.put(name.to_string(), def);
+                std::mem::drop(lock);
+                choices
             };
-            let def = Definition::try_from(def)?;
-            let start = Instant::now();
-            let choices = VMSearcher::new(&def).choices(&request)?;
+            shellac::codec::write_reply(&mut writer, choices)?;
             eprintln!("Time elapsed: {:?}", start.elapsed());
-            lock.put(name.to_string(), def);
-            std::mem::drop(lock);
-            choices
-        };
-        let mut message = message::Builder::new_default();
-        let reply = message.init_root::<shellac_capnp::response::Builder>();
-
-        let mut reply_choices =
-            reply.init_choices(choices.len().try_into().expect("Too many output choices"));
-        for (i, choice) in choices.iter().enumerate() {
-            let mut reply_choice = reply_choices.reborrow().get(i as u32);
-            reply_choice.set_arg(choice);
-            reply_choice.set_description("");
+            Ok(())
+        }) {
+            eprintln!("Could not execute request: {}", err);
         }
-
-        capn_serialize::write_message(&mut writer, &message)?;
-        eprintln!("Time elapsed: {:?}", start.elapsed());
     }
     Ok(())
 }

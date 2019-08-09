@@ -7,7 +7,7 @@ use std::{fmt, io, string::FromUtf8Error, sync::PoisonError};
 pub enum Error {
     Io(io::Error),
     FileNotUtf8(FromUtf8Error),
-    WordOutOfRange(usize, usize),
+    WordOutOfRange(u16, u32),
     Parser(parser::Error),
     Codec(capnp::Error),
     Cache,
@@ -38,7 +38,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io(e) => write!(f, "io error: {}", e),
-            Error::WordOutOfRange(len, word) => write!(
+            Error::WordOutOfRange(word, len) => write!(
                 f,
                 "the word {} can't be autocompleted because it is out of bound for argc = {}",
                 word, len
