@@ -67,7 +67,7 @@ fn encode<R: Read>(reader: R) {
             reply_argv.reborrow().set(i as u32, arg);
         }
 
-        capnp::serialize::write_message(&mut io::stdout().lock(), &message).unwrap();
+        capnp::serialize_packed::write_message(&mut io::stdout().lock(), &message).unwrap();
     }
 }
 
@@ -77,7 +77,7 @@ fn decode<R: BufRead>(mut reader: R) {
             break;
         }
 
-        let request = match capnp::serialize::read_message(
+        let request = match capnp::serialize_packed::read_message(
             &mut reader,
             capnp::message::ReaderOptions::default(),
         ) {

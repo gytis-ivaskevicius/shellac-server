@@ -18,13 +18,18 @@ use self::{
 use std::{
     convert::{TryFrom, TryInto},
     fs::{self, File},
-    io::{self, BufRead, BufReader, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, ErrorKind, Write},
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
+    time::Instant,
 };
 
+use capnp::{
+    message::{self, ReaderOptions},
+    serialize_packed as capn_serialize,
+};
 use lru::LruCache;
 use structopt::StructOpt;
 
@@ -66,20 +71,14 @@ fn handle_client<R: BufRead, W: Write>(
     writer: W,
     cache: &Mutex<LruCache<String, Definition<String>>>,
 ) -> Result<(), Error> {
-    use std::time::Instant;
-
     let mut writer = BufWriter::new(writer);
-    // let mut codec = ArgvCodec::new(BufReader::new(reader));
-    // while let Some(request) = codec.decode()? {
     loop {
         if reader.fill_buf().unwrap().is_empty() {
+            // Check if another request was made
             break;
         }
 
-        let request = match capnp::serialize::read_message(
-            &mut reader,
-            capnp::message::ReaderOptions::default(),
-        ) {
+        let request = match capn_serialize::read_message(&mut reader, ReaderOptions::default()) {
             Ok(r) => r,
             Err(ref err) if err.kind == capnp::ErrorKind::Disconnected => break,
             Err(err) => {
@@ -133,7 +132,7 @@ fn handle_client<R: BufRead, W: Write>(
             std::mem::drop(lock);
             choices
         };
-        let mut message = capnp::message::Builder::new_default();
+        let mut message = message::Builder::new_default();
         let reply = message.init_root::<shellac_capnp::response::Builder>();
 
         let mut reply_choices =
@@ -144,7 +143,7 @@ fn handle_client<R: BufRead, W: Write>(
             reply_choice.set_description("");
         }
 
-        capnp::serialize::write_message(&mut writer, &message).unwrap();
+        capn_serialize::write_message(&mut writer, &message).unwrap();
         eprintln!("Time elapsed: {:?}", start.elapsed());
     }
     Ok(())
@@ -171,8 +170,10 @@ fn main() {
                     });
                 }
                 Err(err) => {
-                    eprintln!("Could not accept socket request {}", err);
-                    std::process::exit(1);
+                    eprintln!("Could not accept socket request: {}", err);
+                    if err.kind() != ErrorKind::ConnectionAborted {
+                        break;
+                    }
                 }
             }
         }
