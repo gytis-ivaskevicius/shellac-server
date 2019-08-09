@@ -1,8 +1,6 @@
-use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
 use std::{
-    convert::TryInto,
     env, fmt,
     io::{self, BufRead, BufReader, Read},
 };
@@ -39,23 +37,6 @@ impl fmt::Display for Error {
     }
 }
 
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Deserialize)]
-struct AutocompRequest {
-    pub argv: Vec<String>,
-    pub word: u16,
-}
-
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Serialize)]
-struct Reply<'a> {
-    pub choices: Vec<Choice<'a>>,
-}
-
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Serialize)]
-struct Choice<'a> {
-    arg:         &'a str,
-    description: &'a str,
-}
-
 fn main() {
     let args = env::args().collect::<Vec<_>>();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -77,48 +58,20 @@ fn main() {
 }
 
 fn encode<R: Read>(reader: R) -> Result<(), Error> {
-    for request in Deserializer::from_reader(BufReader::new(reader)).into_iter::<AutocompRequest>()
-    {
-        let input = request?;
-        let mut message = capnp::message::Builder::new_default();
-        let mut output = message.init_root::<codec::request::Builder>();
-        output.set_word(input.word);
-
-        let len = input.argv.len().try_into().expect("Too many output choices");
-        let mut reply_argv = output.init_argv(len);
-        for (i, arg) in input.argv.iter().enumerate() {
-            reply_argv.reborrow().set(i as u32, arg);
-        }
-
-        capnp::serialize_packed::write_message(&mut io::stdout().lock(), &message)?;
+    for request in Deserializer::from_reader(BufReader::new(reader)).into_iter() {
+        codec::write_request(&mut io::stdout().lock(), &request?)?;
     }
     Ok(())
 }
 
 fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
     while !reader.fill_buf()?.is_empty() {
-        let request = match capnp::serialize_packed::read_message(
-            &mut reader,
-            capnp::message::ReaderOptions::default(),
-        ) {
-            Ok(r) => r,
-            Err(ref err) if err.kind == capnp::ErrorKind::Disconnected => break,
-            Err(err) => {
-                eprintln!("Could not decode request: {}", err);
-                std::process::exit(1);
-            }
-        };
-
-        let request = request.get_root::<codec::response::Reader>()?;
-        let choices = request.get_choices()?;
-        let mut reply = Reply { choices: Vec::with_capacity(choices.len() as usize) };
-        for choice in choices.iter() {
-            reply.choices.push(Choice {
-                arg:         choice.get_arg()?,
-                description: choice.get_description()?,
-            });
-        }
-        serde_json::to_writer(&mut io::stdout().lock(), &reply)?;
+        codec::read_reply(&mut reader, |iter| {
+            let reply = iter
+                .map(|choice| choice.map(|(arg, description)| codec::Choice::new(arg, description)))
+                .collect::<Result<Vec<_>, Error>>()?;
+            serde_json::to_writer(&mut io::stdout().lock(), &reply).map_err(Error::from)
+        })?;
     }
     Ok(())
 }
