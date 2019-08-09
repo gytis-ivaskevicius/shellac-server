@@ -1,14 +1,3 @@
-#[allow(dead_code)]
-mod completion;
-mod parser;
-mod types;
-
-// Codec definition
-#[allow(dead_code)]
-mod shellac_capnp {
-    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
-}
-
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
@@ -17,6 +6,8 @@ use std::{
     env, fmt,
     io::{self, BufRead, BufReader, Read},
 };
+
+use shellac::codec;
 
 #[derive(Debug)]
 enum Error {
@@ -90,7 +81,7 @@ fn encode<R: Read>(reader: R) -> Result<(), Error> {
     {
         let input = request?;
         let mut message = capnp::message::Builder::new_default();
-        let mut output = message.init_root::<shellac_capnp::request::Builder>();
+        let mut output = message.init_root::<codec::request::Builder>();
         output.set_word(input.word);
 
         let len = input.argv.len().try_into().expect("Too many output choices");
@@ -118,7 +109,7 @@ fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
             }
         };
 
-        let request = request.get_root::<shellac_capnp::response::Reader>()?;
+        let request = request.get_root::<codec::response::Reader>()?;
         let choices = request.get_choices()?;
         let mut reply = Reply { choices: Vec::with_capacity(choices.len() as usize) };
         for choice in choices.iter() {

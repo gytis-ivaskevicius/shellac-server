@@ -1,18 +1,9 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 
-mod completion;
-mod parser;
-mod types;
-
-// Codec definition
-#[allow(dead_code)]
-mod shellac_capnp {
-    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
-}
-
-use self::{
+use shellac::{
+    codec,
     completion::{Definition, VMSearcher},
-    types::Error,
+    parser, Error,
 };
 
 use std::{
@@ -75,7 +66,7 @@ fn handle_client<R: BufRead, W: Write>(
     // Check if another request was made
     while !reader.fill_buf()?.is_empty() {
         let request = capn_serialize::read_message(&mut reader, ReaderOptions::default())?;
-        let request = request.get_root::<shellac_capnp::request::Reader>()?;
+        let request = request.get_root::<codec::request::Reader>()?;
 
         let argv = request.get_argv()?;
         let word = request.get_word();
@@ -116,7 +107,7 @@ fn handle_client<R: BufRead, W: Write>(
             choices
         };
         let mut message = message::Builder::new_default();
-        let reply = message.init_root::<shellac_capnp::response::Builder>();
+        let reply = message.init_root::<codec::response::Builder>();
 
         let mut reply_choices =
             reply.init_choices(choices.len().try_into().expect("Too many output choices"));

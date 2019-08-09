@@ -296,10 +296,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T>
 where
     String: From<T>,
 {
-    pub fn choices(
-        mut self,
-        args: &super::shellac_capnp::request::Reader,
-    ) -> Result<Vec<String>, Error> {
+    pub fn choices(mut self, args: &super::codec::request::Reader) -> Result<Vec<String>, Error> {
         let argv = args.get_argv().unwrap();
         let word = args.get_word();
         for (i, arg) in argv.iter().enumerate().skip(1) {
