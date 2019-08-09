@@ -1,7 +1,6 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 
 use super::parser;
-use serde::{Deserialize, Serialize};
 use std::{fmt, io, string::FromUtf8Error};
 
 #[derive(Debug)]
@@ -38,24 +37,4 @@ impl fmt::Display for Error {
             Error::Parser(err) => write!(f, "The completion file was invalid: {}", err),
         }
     }
-}
-
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AutocompRequest {
-    argv: Vec<String>,
-    word: usize,
-}
-
-impl AutocompRequest {
-    pub fn check(&self) -> Result<(), Error> {
-        if self.word > self.argv.len() {
-            Err(Error::WordOutOfRange(self.word, self.argv.len()))
-        } else {
-            Ok(())
-        }
-    }
-
-    pub const fn argv(&self) -> &Vec<String> { &self.argv }
-
-    pub const fn word(&self) -> usize { self.word }
 }

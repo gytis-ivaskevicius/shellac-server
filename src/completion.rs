@@ -9,7 +9,7 @@ use std::{
 // use std::process::Command;
 // use std::process::Stdio;
 
-use super::{AutocompRequest, Error};
+use super::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step<T: Ord> {
@@ -78,7 +78,6 @@ pub enum ChoiceResolver<T> {
 pub struct VMSearcher<'a, T: Ord> {
     def:   &'a Definition<T>,
     stack: Vec<Searcher>,
-    args:  &'a AutocompRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
@@ -288,8 +287,8 @@ impl Searcher {
 }
 
 impl<'a, T: Ord> VMSearcher<'a, T> {
-    pub fn new(def: &'a Definition<T>, args: &'a AutocompRequest) -> Self {
-        Self { def, stack: vec![Searcher::new(def.num_counters, 0)], args }
+    pub fn new(def: &'a Definition<T>) -> Self {
+        Self { def, stack: vec![Searcher::new(def.num_counters, 0)] }
     }
 }
 
@@ -297,8 +296,14 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T>
 where
     String: From<T>,
 {
-    pub fn choices(mut self) -> Result<Vec<String>, Error> {
-        for (i, arg) in self.args.argv().iter().enumerate().skip(1) {
+    pub fn choices(
+        mut self,
+        args: &super::shellac_capnp::request::Reader,
+    ) -> Result<Vec<String>, Error> {
+        let argv = args.get_argv().unwrap();
+        let word = args.get_word();
+        for (i, arg) in argv.iter().enumerate().skip(1) {
+            let arg = arg.unwrap();
             // Advance to the next argument
             while self.stack.iter().any(|searcher| {
                 if let Step::Check(..) | Step::Match = self.def.steps[searcher.step as usize] {
@@ -324,7 +329,7 @@ where
                 }
             }
 
-            if i as usize == self.args.word() {
+            if i as u16 == word {
                 let def = &self.def;
 
                 self.stack.retain_mut(|searcher| {
@@ -382,15 +387,14 @@ where
             }
         }
 
-        let VMSearcher { mut stack, args, def } = self;
-        let arg = &args.argv()[args.word()];
+        let arg = &argv.get(word as u32).unwrap();
 
         let mut results = Vec::with_capacity(20);
-        stack.sort_unstable_by_key(|searcher| searcher.completion);
-        stack.dedup_by_key(|searcher| searcher.completion);
-        for searcher in stack {
+        self.stack.sort_unstable_by_key(|searcher| searcher.completion);
+        self.stack.dedup_by_key(|searcher| searcher.completion);
+        for searcher in self.stack {
             if let Some(completion) = searcher.completion {
-                if let Step::Check(check) = &def.steps[completion as usize] {
+                if let Step::Check(check) = &self.def.steps[completion as usize] {
                     check.resolve(&mut results, arg, &searcher.counters);
                 } else {
                     unreachable!()

@@ -4,15 +4,21 @@ mod completion;
 mod parser;
 mod types;
 
+// Codec definition
+#[allow(dead_code)]
+mod shellac_capnp {
+    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
+}
+
 use self::{
     completion::{Definition, VMSearcher},
-    types::{AutocompRequest, Error},
+    types::Error,
 };
 
 use std::{
-    convert::TryFrom,
+    convert::{TryFrom, TryInto},
     fs::{self, File},
-    io::{self, BufReader, BufWriter, Read, Write},
+    io::{self, BufRead, BufReader, BufWriter, Write},
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -20,7 +26,6 @@ use std::{
 };
 
 use lru::LruCache;
-use serde_json::Deserializer;
 use structopt::StructOpt;
 
 /// A Shell Agnostic Completion server
@@ -56,8 +61,8 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
     Ok(path.with_extension("shellac"))
 }
 
-fn handle_client<R: Read, W: Write>(
-    reader: R,
+fn handle_client<R: BufRead, W: Write>(
+    mut reader: R,
     writer: W,
     cache: &Mutex<LruCache<String, Definition<String>>>,
 ) -> Result<(), Error> {
@@ -66,18 +71,33 @@ fn handle_client<R: Read, W: Write>(
     let mut writer = BufWriter::new(writer);
     // let mut codec = ArgvCodec::new(BufReader::new(reader));
     // while let Some(request) = codec.decode()? {
-    for request in Deserializer::from_reader(BufReader::new(reader)).into_iter::<AutocompRequest>()
-    {
-        let request = match request {
+    loop {
+        if reader.fill_buf().unwrap().is_empty() {
+            break;
+        }
+
+        let request = match capnp::serialize::read_message(
+            &mut reader,
+            capnp::message::ReaderOptions::default(),
+        ) {
             Ok(r) => r,
+            Err(ref err) if err.kind == capnp::ErrorKind::Disconnected => break,
             Err(err) => {
                 eprintln!("Could not decode request: {}", err);
-                continue;
+                std::process::exit(1);
             }
         };
-        request.check()?;
+        let request = request.get_root::<shellac_capnp::request::Reader>().unwrap();
+        if request.get_word() as u32 > request.get_argv().unwrap().len() {
+            eprintln!(
+                "Can't autocomplete word {} in argv of length {}",
+                request.get_word(),
+                request.get_argv().unwrap().len()
+            );
+            continue;
+        }
         let start = Instant::now();
-        let name = &request.argv()[0];
+        let name = request.get_argv().unwrap().get(0).unwrap();
         let mut lock = match cache.lock() {
             Ok(v) => v,
             Err(_err) => {
@@ -85,9 +105,12 @@ fn handle_client<R: Read, W: Write>(
                 std::process::exit(1);
             }
         };
-        let choices = if let Some(def) = lock.get(name) {
+
+        // Name should not need to be converted to a String, but the LRU cache requires it for some
+        // reason.
+        let choices = if let Some(def) = lock.get(&name.to_string()) {
             let start = Instant::now();
-            let choices = VMSearcher::new(def, &request).choices()?;
+            let choices = VMSearcher::new(def).choices(&request)?;
             eprintln!("Time elapsed: {:?}", start.elapsed());
             std::mem::drop(lock);
             choices
@@ -104,13 +127,24 @@ fn handle_client<R: Read, W: Write>(
             };
             let def = Definition::try_from(def)?;
             let start = Instant::now();
-            let choices = VMSearcher::new(&def, &request).choices()?;
+            let choices = VMSearcher::new(&def).choices(&request)?;
             eprintln!("Time elapsed: {:?}", start.elapsed());
             lock.put(name.to_string(), def);
             std::mem::drop(lock);
             choices
         };
-        serde_json::to_writer(&mut writer, &choices).unwrap();
+        let mut message = capnp::message::Builder::new_default();
+        let reply = message.init_root::<shellac_capnp::response::Builder>();
+
+        let mut reply_choices =
+            reply.init_choices(choices.len().try_into().expect("Too many output choices"));
+        for (i, choice) in choices.iter().enumerate() {
+            let mut reply_choice = reply_choices.reborrow().get(i as u32);
+            reply_choice.set_arg(choice);
+            reply_choice.set_description("");
+        }
+
+        capnp::serialize::write_message(&mut writer, &message).unwrap();
         eprintln!("Time elapsed: {:?}", start.elapsed());
     }
     Ok(())
@@ -131,7 +165,7 @@ fn main() {
                 Ok(stream) => {
                     let cache = cache.clone();
                     thread::spawn(move || {
-                        if let Err(err) = handle_client(&stream, &stream, &cache) {
+                        if let Err(err) = handle_client(BufReader::new(&stream), &stream, &cache) {
                             eprintln!("Could not execute request: {}", err)
                         }
                     });
