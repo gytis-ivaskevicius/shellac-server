@@ -1,16 +1,8 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 
-pub mod codec;
-pub mod completion;
-pub mod parser;
-
+use super::parser;
 use serde::{Deserialize, Serialize};
 use std::{fmt, io, string::FromUtf8Error};
-
-#[derive(Debug, Serialize)]
-pub struct Result {
-    choices: Vec<String>,
-}
 
 #[derive(Debug)]
 pub enum Error {
@@ -55,6 +47,14 @@ pub struct AutocompRequest {
 }
 
 impl AutocompRequest {
+    pub fn check(&self) -> Result<(), Error> {
+        if self.word > self.argv.len() {
+            Err(Error::WordOutOfRange(self.word, self.argv.len()))
+        } else {
+            Ok(())
+        }
+    }
+
     pub const fn argv(&self) -> &Vec<String> { &self.argv }
 
     pub const fn word(&self) -> usize { self.word }

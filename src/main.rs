@@ -1,6 +1,12 @@
-use shellac_server::{
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+
+mod completion;
+mod parser;
+mod types;
+
+use self::{
     completion::{Definition, VMSearcher},
-    parser, AutocompRequest,
+    types::{AutocompRequest, Error},
 };
 
 use std::{
@@ -54,7 +60,7 @@ fn handle_client<R: Read, W: Write>(
     reader: R,
     writer: W,
     cache: &Mutex<LruCache<String, Definition<String>>>,
-) -> Result<(), shellac_server::Error> {
+) -> Result<(), Error> {
     use std::time::Instant;
 
     let mut writer = BufWriter::new(writer);
@@ -62,7 +68,14 @@ fn handle_client<R: Read, W: Write>(
     // while let Some(request) = codec.decode()? {
     for request in Deserializer::from_reader(BufReader::new(reader)).into_iter::<AutocompRequest>()
     {
-        let request = request.unwrap();
+        let request = match request {
+            Ok(r) => r,
+            Err(err) => {
+                eprintln!("Could not decode request: {}", err);
+                continue;
+            }
+        };
+        request.check()?;
         let start = Instant::now();
         let name = &request.argv()[0];
         let mut lock = match cache.lock() {
@@ -72,29 +85,31 @@ fn handle_client<R: Read, W: Write>(
                 std::process::exit(1);
             }
         };
-        let choices = match lock.get(name) {
-            Some(def) => {
-                let start = Instant::now();
-                let choices = VMSearcher::new(def, &request).choices();
-                eprintln!("Time elapsed: {:?}", start.elapsed());
-                std::mem::drop(lock);
-                choices
-            }
-            None => {
-                let path = get_comp_file(name)?;
+        let choices = if let Some(def) = lock.get(name) {
+            let start = Instant::now();
+            let choices = VMSearcher::new(def, &request).choices()?;
+            eprintln!("Time elapsed: {:?}", start.elapsed());
+            std::mem::drop(lock);
+            choices
+        } else {
+            let path = get_comp_file(name)?;
 
-                let mut file = File::open(path)?;
-                let def = serde_yaml::from_reader::<_, parser::Definition>(&mut file).unwrap();
-                let def = Definition::try_from(def)?;
-                let start = Instant::now();
-                let choices = VMSearcher::new(&def, &request).choices();
-                eprintln!("Time elapsed: {:?}", start.elapsed());
-                lock.put(name.to_string(), def);
-                std::mem::drop(lock);
-                choices
-            }
-        }
-        .unwrap();
+            let mut file = File::open(path)?;
+            let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
+                Ok(d) => d,
+                Err(err) => {
+                    eprintln!("Failed to parse definition file for '{}': {}", name, err);
+                    continue;
+                }
+            };
+            let def = Definition::try_from(def)?;
+            let start = Instant::now();
+            let choices = VMSearcher::new(&def, &request).choices()?;
+            eprintln!("Time elapsed: {:?}", start.elapsed());
+            lock.put(name.to_string(), def);
+            std::mem::drop(lock);
+            choices
+        };
         serde_json::to_writer(&mut writer, &choices).unwrap();
         eprintln!("Time elapsed: {:?}", start.elapsed());
     }

@@ -324,7 +324,7 @@ where
                 }
             }
 
-            if i as usize == self.args.word {
+            if i as usize == self.args.word() {
                 let def = &self.def;
 
                 self.stack.retain_mut(|searcher| {
@@ -383,7 +383,7 @@ where
         }
 
         let VMSearcher { mut stack, args, def } = self;
-        let arg = &args.argv()[args.word];
+        let arg = &args.argv()[args.word()];
 
         let mut results = Vec::with_capacity(20);
         stack.sort_unstable_by_key(|searcher| searcher.completion);
