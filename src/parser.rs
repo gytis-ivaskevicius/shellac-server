@@ -1,7 +1,9 @@
 use std::{
+    borrow::Borrow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
+    fmt::{self, Debug, Display, Formatter},
 };
 
 use combine::{
@@ -14,7 +16,7 @@ use combine::{
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::completion::{Argument, Operator, Sentinel, Step};
+use super::completion::{self, Argument, Operator, Sentinel, Step};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Definition {
@@ -24,6 +26,43 @@ pub struct Definition {
     sections:    Definitions,
     definitions: BTreeMap<String, String>,
     desc:        BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Regex(regex::Error),
+    Parsing(Errors<char, String, combine::stream::state::SourcePosition>),
+    TooMuchSteps(usize),
+    UndefinedDescription(String),
+}
+
+impl std::error::Error for Error {}
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Regex(cause) => write!(f, "Invalid regex: {}", cause),
+            Error::Parsing(err) => write!(f, "Invalid syntax: {}", err),
+            Error::TooMuchSteps(size) => write!(
+                f,
+                "The number of steps for completion is too highh: {}. Please split the definition \
+                 into a separate file",
+                size
+            ),
+            Error::UndefinedDescription(desc) => {
+                write!(f, "Reference to unknown description '{}'", desc)
+            }
+        }
+    }
+}
+
+impl From<regex::Error> for Error {
+    fn from(cause: regex::Error) -> Self { Error::Regex(cause) }
+}
+
+impl From<Errors<char, &str, combine::stream::state::SourcePosition>> for Error {
+    fn from(cause: Errors<char, &str, combine::stream::state::SourcePosition>) -> Self {
+        Error::Parsing(cause.map_range(ToOwned::to_owned))
+    }
 }
 
 type Definitions = HashMap<String, Arg>;
@@ -58,10 +97,11 @@ struct Choice {
 
 // Keep the parser because this is a recursive type
 parser! {
-    fn alt[I]()(I) -> Alt<I::Range>
+    fn alt[I, O]()(I) -> Alt<O>
     where [
+        O: From<I::Range> + Default,
         I: Stream<Item = char> + RangeStream,
-        I::Range: combine::stream::Range + Default,
+        I::Range: combine::stream::Range,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
     ] {
         sep_by1(sequence(), string("|"))
@@ -70,17 +110,16 @@ parser! {
 
 fn repetition<I>() -> impl Parser<Input = I, Output = Repetition>
 where
-    I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I: Stream<Item = char>,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     choice!(char('+').map(|_| Repetition::Multiple), char('*').map(|_| Repetition::Any))
 }
 
-fn token<I>() -> impl Parser<Input = I, Output = Token<I::Range>>
+fn token<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = Token<O>>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     between(
@@ -98,68 +137,64 @@ where
     )
 }
 
-fn sequence<I>() -> impl Parser<Input = I, Output = Vec<Token<I::Range>>>
+fn sequence<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = Vec<Token<O>>>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     sep_by1(token(), string("=>"))
 }
 
-fn argument<I>() -> impl Parser<Input = I, Output = Argument<I::Range>>
+fn argument<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = Argument<O>>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
+    I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (optional_word(), optional(many1((between(char('<'), char('>'), word()), optional_word()))))
         .map(|(literal, reference)| Argument::new(literal, reference))
 }
 
-fn optional_word<I>() -> impl Parser<Input = I, Output = I::Range>
-where
-    I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + Default,
-    I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    optional(word()).map(|word| word.unwrap_or_else(I::Range::default))
-}
-
-fn word<I>() -> impl Parser<Input = I, Output = I::Range>
+fn optional_word<I, O: From<I::Range> + Default>() -> impl Parser<Input = I, Output = O>
 where
     I: Stream<Item = char> + RangeStream,
     I::Range: combine::stream::Range,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/')
+    optional(word()).map(|word| word.unwrap_or_else(O::default))
 }
 
-fn arg_choice<'a, I: 'a>(
-    descs: &'a [I::Range],
-) -> impl Parser<Input = I, Output = (super::completion::Argument<I::Range>, super::completion::Choice)>
-         + 'a
+fn word<I, O: From<I::Range>>() -> impl Parser<Input = I, Output = O>
 where
     I: Stream<Item = char> + RangeStream,
-    I::Range: combine::stream::Range + combine::parser::combinator::StrLike + Default + Ord,
+    I::Range: combine::stream::Range,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '=' || c == '/').map(Into::into)
+}
+
+fn arg_choice<'a, 'b: 'a, I: 'a, O: 'b, T: 'b, S>(
+    descs: &'a [S],
+) -> impl Parser<Input = I, Output = (completion::Argument<O>, completion::Choice)> + 'a
+where
+    O: From<I::Range> + Default,
+    S: Borrow<T> + 'b,
+    T: Ord + ?Sized,
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + Into<&'a T> + Ord + combine::parser::combinator::StrLike,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
         argument(),
         spaces(),
-        optional(between(string("["), char(']'), word())),
+        optional(between(char('['), char(']'), word::<_, I::Range>())).map(move |desc| {
+            desc.and_then(|desc| descs.binary_search_by_key(&desc.into(), |s| s.borrow()).ok())
+        }),
         spaces(),
-        optional(between(string("("), char(')'), sentinel())),
+        optional(between(char('('), char(')'), sentinel())),
     )
-        .map(move |(name, _, desc, _, sentinel)| {
-            (
-                name,
-                super::completion::Choice::new(
-                    desc.and_then(|desc| descs.binary_search(&desc).ok()),
-                    sentinel,
-                ),
-            )
-        })
+        .map(move |(name, _, desc, _, sentinel)| (name, completion::Choice::new(desc, sentinel)))
 }
 
 fn sentinel<I>() -> impl Parser<Input = I, Output = Sentinel>
@@ -210,24 +245,26 @@ where
     )
 }
 
-impl<'a> TryFrom<&'a Definition> for super::completion::Definition<'a, &'a str> {
-    type Error = regex::Error;
+impl TryFrom<Definition> for completion::Definition<String> {
+    type Error = Error;
 
-    fn try_from(def: &'a Definition) -> Result<Self, Self::Error> {
+    fn try_from(def: Definition) -> Result<Self, Self::Error> {
         if def.version != 0 {
             panic!("wrong version");
         }
-        let (keys, descriptions): (Vec<_>, Vec<_>) =
-            def.desc.iter().map(|(a, b)| (a.as_str(), b)).unzip();
-        let steps = alt().easy_parse(State::new(def.arguments.as_str())).unwrap().0;
-        let mut steps = resolve(steps, 0, &def.sections, keys.as_slice());
+        let (keys, descriptions): (Vec<_>, Vec<_>) = def.desc.into_iter().unzip();
+        let steps = alt().easy_parse(State::new(def.arguments.as_str()))?.0;
+        let mut steps = resolve(steps, 0, &def.sections, keys.as_slice())?;
         steps.push(Step::Match); // Last token is always match
 
         Ok(Self { num_counters: def.counters, descriptions, steps })
     }
 }
 
-impl<'a> TryFrom<&'a str> for super::completion::Argument<&'a str> {
+impl<'a, O> TryFrom<&'a str> for completion::Argument<O>
+where
+    O: From<&'a str> + Default + Ord,
+{
     type Error = Errors<char, &'a str, SourcePosition>;
 
     fn try_from(arg: &'a str) -> Result<Self, Self::Error> {
@@ -235,7 +272,7 @@ impl<'a> TryFrom<&'a str> for super::completion::Argument<&'a str> {
     }
 }
 
-impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
+impl<'a> TryFrom<&'a str> for completion::Sentinel {
     type Error = Errors<char, &'a str, SourcePosition>;
 
     fn try_from(arg: &'a str) -> Result<Self, Self::Error> {
@@ -243,10 +280,14 @@ impl<'a> TryFrom<&'a str> for super::completion::Sentinel {
     }
 }
 
-impl<'a, 'b> TryFrom<(&'a Arg, &'b [&'a str])> for super::completion::Arg<&'a str> {
-    type Error = regex::Error;
+impl<'a, 'b: 'a, S: 'a, O: 'a> TryFrom<(&'a Arg, &'b [S])> for completion::Arg<O>
+where
+    O: From<&'a str> + Default + Ord,
+    S: Borrow<str> + 'a,
+{
+    type Error = Error;
 
-    fn try_from((arg, descs): (&'a Arg, &'b [&'a str])) -> Result<Self, Self::Error> {
+    fn try_from((arg, descs): (&'a Arg, &'b [S])) -> Result<Self, Self::Error> {
         Ok(Self::new(
             arg.regex.as_ref().map(|regex| Regex::new(regex)).transpose()?,
             arg.choices
@@ -254,21 +295,27 @@ impl<'a, 'b> TryFrom<(&'a Arg, &'b [&'a str])> for super::completion::Arg<&'a st
                 .map(|choice| {
                     arg_choice(descs).easy_parse(State::new(choice.as_str())).map(|(arg, _)| arg)
                 })
-                .collect::<Result<_, _>>()
-                .unwrap(),
+                .collect::<Result<_, _>>()?,
         ))
     }
 }
 
 // TODO: Remove debug
-fn resolve<'a, 'b>(
-    mut alt: Alt<&'a str>,
+fn resolve<'a, 'b, T, S>(
+    mut alt: Alt<T>,
     mut idx: u8,
     defs: &'a Definitions,
-    descs: &'b [&'a str],
-) -> Vec<Step<&'a str>> {
+    descs: &'b [S],
+) -> Result<Vec<Step<T>>, Error>
+where
+    T: AsRef<str> + Ord + 'a,
+    completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
+    <completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+    Error: From<<completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error>,
+{
     match alt.len() {
-        0 => Vec::new(),
+        0 => Ok(Vec::new()),
+        // Since the length is one, the unwrap can't fail
         1 => seq_to_vec(alt.pop().unwrap(), idx, defs, descs),
         _ => {
             let mut steps = Vec::with_capacity(2 * alt.len());
@@ -280,8 +327,10 @@ fn resolve<'a, 'b>(
             steps.push(Step::Jump(idx));
             steps.push(Step::Jump(0));
             while let Some(seq) = alt.next() {
-                let extra_steps = seq_to_vec(seq, idx, defs, descs);
-                idx += extra_steps.len() as u8 + 2;
+                let extra_steps = seq_to_vec(seq, idx, defs, descs)?;
+                idx += u8::try_from(extra_steps.len())
+                    .map_err(|_| Error::TooMuchSteps(extra_steps.len()))?
+                    + 2;
                 if alt.size_hint().0 != 0 {
                     steps.push(Step::Split(idx));
                 }
@@ -293,48 +342,59 @@ fn resolve<'a, 'b>(
             if let Some(Step::Jump(ref mut matching)) = steps.get_mut(1) {
                 *matching = idx - 2;
             }
-            steps
+            Ok(steps)
         }
     }
 }
 
-fn seq_to_vec<'a, 'b>(
-    seq: Vec<Token<&'a str>>,
+fn seq_to_vec<'a, 'b, T, S>(
+    seq: Vec<Token<T>>,
     idx: u8,
     defs: &'a Definitions,
-    descs: &'b [&'a str],
-) -> Vec<Step<&'a str>> {
+    descs: &'b [S],
+) -> Result<Vec<Step<T>>, Error>
+where
+    T: AsRef<str> + Ord + 'a,
+    completion::Arg<T>: TryFrom<(&'a Arg, &'b [S])>,
+    <completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error: Debug,
+    Error: From<<completion::Arg<T> as TryFrom<(&'a Arg, &'b [S])>>::Error>,
+{
     let mut steps = Vec::with_capacity(seq.len());
     for token in seq {
-        let start = idx + steps.len() as u8;
+        let start =
+            idx + u8::try_from(steps.len()).map_err(|_| Error::TooMuchSteps(steps.len()))?;
         match token {
-            Token::Argument(arg) => steps.push(Step::Check(super::completion::Arg::new(
+            Token::Argument(arg) => steps.push(Step::Check(completion::Arg::new(
                 None,
-                vec![(arg, super::completion::Choice::new(None, None))].into_iter().collect(),
+                vec![(arg, completion::Choice::new(None, None))].into_iter().collect(),
             ))),
-            Token::Group(alt, Repetition::Once) => steps.extend(resolve(alt, start, defs, descs)),
+            Token::Group(alt, Repetition::Once) => steps.extend(resolve(alt, start, defs, descs)?),
             Token::Group(alt, Repetition::Optional) => {
-                let extra_steps = resolve(alt, start + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs)?;
                 steps.push(Step::Split(start + extra_steps.len() as u8 + 1));
                 steps.extend(extra_steps);
             }
             Token::Group(alt, Repetition::Any) => {
-                let extra_steps = resolve(alt, start + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs)?;
                 steps.push(Step::Split(start + extra_steps.len() as u8 + 2));
                 steps.extend(extra_steps);
                 steps.push(Step::Split(start + 1));
             }
             Token::Group(alt, Repetition::Multiple) => {
-                let extra_steps = resolve(alt, start + 1, defs, descs);
+                let extra_steps = resolve(alt, start + 1, defs, descs)?;
                 steps.extend(extra_steps);
                 steps.push(Step::Split(start));
             }
             Token::Definition(def) => {
-                steps.push(Step::Check((defs.get(def).unwrap(), descs).try_into().unwrap()))
+                let def = defs
+                    .get(def.as_ref())
+                    .ok_or_else(|| Error::UndefinedDescription(def.as_ref().to_string()))?;
+                let step = completion::Arg::try_from((def, descs))?;
+                steps.push(Step::Check(step))
             }
         }
     }
-    steps
+    Ok(steps)
 }
 
 #[cfg(test)]
@@ -455,7 +515,7 @@ mod test {
             Ok((
                 (
                     Argument::new("f", None),
-                    super::super::completion::Choice::new(
+                    completion::Choice::new(
                         Some(1),
                         Some(Sentinel::new(
                             1,
