@@ -72,38 +72,21 @@ fn handle_client<R: BufRead, W: Write>(
     cache: &Mutex<LruCache<String, Definition<String>>>,
 ) -> Result<(), Error> {
     let mut writer = BufWriter::new(writer);
-    loop {
-        if reader.fill_buf().unwrap().is_empty() {
-            // Check if another request was made
-            break;
-        }
+    // Check if another request was made
+    while !reader.fill_buf()?.is_empty() {
+        let request = capn_serialize::read_message(&mut reader, ReaderOptions::default())?;
+        let request = request.get_root::<shellac_capnp::request::Reader>()?;
 
-        let request = match capn_serialize::read_message(&mut reader, ReaderOptions::default()) {
-            Ok(r) => r,
-            Err(ref err) if err.kind == capnp::ErrorKind::Disconnected => break,
-            Err(err) => {
-                eprintln!("Could not decode request: {}", err);
-                std::process::exit(1);
-            }
-        };
-        let request = request.get_root::<shellac_capnp::request::Reader>().unwrap();
-        if request.get_word() as u32 > request.get_argv().unwrap().len() {
-            eprintln!(
-                "Can't autocomplete word {} in argv of length {}",
-                request.get_word(),
-                request.get_argv().unwrap().len()
-            );
+        let argv = request.get_argv()?;
+        let word = request.get_word();
+
+        if word as u32 > argv.len() {
+            eprintln!("Can't autocomplete word {} in argv of length {}", word, argv.len());
             continue;
         }
         let start = Instant::now();
-        let name = request.get_argv().unwrap().get(0).unwrap();
-        let mut lock = match cache.lock() {
-            Ok(v) => v,
-            Err(_err) => {
-                eprintln!("Mutex poisoned, could not access cache");
-                std::process::exit(1);
-            }
-        };
+        let name = argv.get(0)?;
+        let mut lock = cache.lock()?;
 
         // Name should not need to be converted to a String, but the LRU cache requires it for some
         // reason.
@@ -143,7 +126,7 @@ fn handle_client<R: BufRead, W: Write>(
             reply_choice.set_description("");
         }
 
-        capn_serialize::write_message(&mut writer, &message).unwrap();
+        capn_serialize::write_message(&mut writer, &message)?;
         eprintln!("Time elapsed: {:?}", start.elapsed());
     }
     Ok(())
@@ -154,10 +137,12 @@ fn main() {
     let cache = Arc::new(Mutex::new(LruCache::new(20)));
 
     if let Some(path) = opts.socket {
-        let listener = UnixListener::bind(&path).unwrap_or_else(|_| {
-            fs::remove_file(&path).unwrap();
-            UnixListener::bind(&path).unwrap()
-        });
+        let listener = UnixListener::bind(&path)
+            .or_else(|_| {
+                fs::remove_file(&path)?;
+                UnixListener::bind(&path)
+            })
+            .unwrap();
 
         for stream in listener.incoming() {
             match stream {
@@ -172,7 +157,7 @@ fn main() {
                 Err(err) => {
                     eprintln!("Could not accept socket request: {}", err);
                     if err.kind() != ErrorKind::ConnectionAborted {
-                        break;
+                        std::process::exit(1);
                     }
                 }
             }

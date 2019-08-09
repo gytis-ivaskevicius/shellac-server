@@ -14,11 +14,39 @@ use serde_json::Deserializer;
 
 use std::{
     convert::TryInto,
-    env,
+    env, fmt,
     io::{self, BufRead, BufReader, Read},
 };
 
-use types::Error;
+#[derive(Debug)]
+enum Error {
+    CapnProto(capnp::Error),
+    Serde(serde_json::Error),
+    Io(io::Error),
+}
+
+impl From<io::Error> for Error {
+    fn from(cause: io::Error) -> Self { Error::Io(cause) }
+}
+
+impl From<capnp::Error> for Error {
+    fn from(cause: capnp::Error) -> Self { Error::CapnProto(cause) }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(cause: serde_json::Error) -> Self { Error::Serde(cause) }
+}
+
+impl std::error::Error for Error {}
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::CapnProto(e) => write!(f, "failure with cap'n proto: {}", e),
+            Error::Serde(e) => write!(f, "failed to translate to JSON: {}", e),
+            Error::Io(e) => write!(f, "io error: {}", e),
+        }
+    }
+}
 
 #[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Deserialize)]
 struct AutocompRequest {
@@ -39,7 +67,7 @@ struct Choice<'a> {
 
 fn main() {
     let args = env::args().collect::<Vec<_>>();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [_, "encode"] => encode(io::stdin().lock()),
         [_, "encode", data] => encode(data.as_bytes()),
         [_, "decode"] => decode(io::stdin().lock()),
@@ -50,13 +78,17 @@ fn main() {
             );
             std::process::exit(1);
         }
+    };
+    if let Err(err) = result {
+        eprintln!("Fatal error: {}", err);
+        std::process::exit(1);
     }
 }
 
-fn encode<R: Read>(reader: R) {
+fn encode<R: Read>(reader: R) -> Result<(), Error> {
     for request in Deserializer::from_reader(BufReader::new(reader)).into_iter::<AutocompRequest>()
     {
-        let input = request.unwrap();
+        let input = request?;
         let mut message = capnp::message::Builder::new_default();
         let mut output = message.init_root::<shellac_capnp::request::Builder>();
         output.set_word(input.word);
@@ -67,16 +99,13 @@ fn encode<R: Read>(reader: R) {
             reply_argv.reborrow().set(i as u32, arg);
         }
 
-        capnp::serialize_packed::write_message(&mut io::stdout().lock(), &message).unwrap();
+        capnp::serialize_packed::write_message(&mut io::stdout().lock(), &message)?;
     }
+    Ok(())
 }
 
-fn decode<R: BufRead>(mut reader: R) {
-    loop {
-        if reader.fill_buf().unwrap().len() == 0 {
-            break;
-        }
-
+fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
+    while !reader.fill_buf()?.is_empty() {
         let request = match capnp::serialize_packed::read_message(
             &mut reader,
             capnp::message::ReaderOptions::default(),
@@ -88,15 +117,17 @@ fn decode<R: BufRead>(mut reader: R) {
                 std::process::exit(1);
             }
         };
-        let request = request.get_root::<shellac_capnp::response::Reader>().unwrap();
-        let mut reply =
-            Reply { choices: Vec::with_capacity(request.get_choices().unwrap().len() as usize) };
-        for choice in request.get_choices().unwrap().iter() {
+
+        let request = request.get_root::<shellac_capnp::response::Reader>()?;
+        let choices = request.get_choices()?;
+        let mut reply = Reply { choices: Vec::with_capacity(choices.len() as usize) };
+        for choice in choices.iter() {
             reply.choices.push(Choice {
-                arg:         choice.get_arg().unwrap(),
-                description: choice.get_description().unwrap(),
+                arg:         choice.get_arg()?,
+                description: choice.get_description()?,
             });
         }
-        serde_json::to_writer(&mut io::stdout().lock(), &reply).unwrap();
+        serde_json::to_writer(&mut io::stdout().lock(), &reply)?;
     }
+    Ok(())
 }
