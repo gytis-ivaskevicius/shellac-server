@@ -212,7 +212,7 @@ where
                             .keys()
                             .any(|key| capture.as_str().starts_with(key.literal().as_ref()))
                     }) {
-                        results.push((&test).into());
+                        results.push(test.as_str().into());
                     }
                 }
             }

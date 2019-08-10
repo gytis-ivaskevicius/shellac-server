@@ -1,0 +1,56 @@
+image: "redoxos/redoxer"
+
+variables:
+    CARGO_HOME: $CI_PROJECT_DIR/cargo
+before_script:
+  - apt-get update -qq
+  - apt-get install -qq build-essential curl git
+format:
+  cache:
+    paths:
+      - cargo/
+      - target/
+  script:
+    - rustup default nightly
+    - rustup component add rustfmt
+    - cargo +nightly fmt --all -- --check
+
+linux:
+  image: 'rust:1.35.0'
+  cache:
+    paths:
+      - cargo/
+      - target/
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq capnproto libcapnp-dev
+  script:
+    - cargo check
+    - cargo check --features json --bin shellac-json
+
+linux:stable:
+  cache:
+    paths:
+      - cargo/
+      - target/
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq capnproto libcapnp-dev
+  script:
+    - cargo check
+    - cargo check --features json --bin shellac-json
+    # Simple integration test
+    - cargo run --features json --bin shellac-json -- encode '{"word":4,"argv":["git","-f","-f","-p","-"]}' | cargo run --release --bin shellac | cargo run --features json --bin shellac-json -- decode > tests/result 2> /dev/null
+    - diff tests/result tests/expected
+
+redox:
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq capnproto libcapnp-dev build-essential curl git
+    - git clone --single-branch --branch=extra-traits-redox --depth=1 https://github.com/AdminXVII/libc
+    - mkdir .cargo
+    - echo 'paths = [ "libc" ]' >> .cargo/config
+    - cargo clean
+  script:
+    - redoxer check
+    - redoxer check --features json --bin shellac-json
