@@ -21,6 +21,9 @@ linux:
     paths:
       - cargo/
       - target/
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq capnproto libcapnp-dev
   script:
     - cargo check
     - cargo check --features json --bin shellac-json
@@ -47,7 +50,7 @@ redox:
     - git clone --single-branch --branch=extra-traits-redox --depth=1 https://github.com/AdminXVII/libc
     - mkdir .cargo
     - echo 'paths = [ "libc" ]' >> .cargo/config
-    - redoxer clean
+    - cargo clean
   script:
     - redoxer check
     - redoxer check --features json --bin shellac-json
