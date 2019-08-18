@@ -47,9 +47,6 @@ redox:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq capnproto libcapnp-dev build-essential curl git
-    - git clone --single-branch --branch=extra-traits-redox --depth=1 https://github.com/AdminXVII/libc
-    - mkdir .cargo
-    - echo 'paths = [ "libc" ]' >> .cargo/config
     - cargo clean
   script:
     - redoxer check
