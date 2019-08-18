@@ -13,6 +13,9 @@ struct Response {
 }
 
 struct Suggestion {
-  arg @0 :Text;
+  arg :union {
+    literal @0 :Text;
+    command @2 :List(Text);
+  }
   description @1 :Text;
 }

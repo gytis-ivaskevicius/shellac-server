@@ -10,12 +10,17 @@ use shellac::codec;
 #[derive(Debug)]
 enum Error {
     CapnProto(capnp::Error),
+    NotInSchema(capnp::NotInSchema),
     Serde(serde_json::Error),
     Io(io::Error),
 }
 
 impl From<io::Error> for Error {
     fn from(cause: io::Error) -> Self { Error::Io(cause) }
+}
+
+impl From<capnp::NotInSchema> for Error {
+    fn from(cause: capnp::NotInSchema) -> Self { Error::NotInSchema(cause) }
 }
 
 impl From<capnp::Error> for Error {
@@ -31,6 +36,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::CapnProto(e) => write!(f, "failure with cap'n proto: {}", e),
+            Error::NotInSchema(e) => write!(f, "wrong cap'n proto protocol: {}", e),
             Error::Serde(e) => write!(f, "failed to translate to JSON: {}", e),
             Error::Io(e) => write!(f, "io error: {}", e),
         }
@@ -68,7 +74,9 @@ fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
     while !reader.fill_buf()?.is_empty() {
         codec::read_reply(&mut reader, |iter| {
             let reply = iter
-                .map(|choice| choice.map(|(arg, description)| codec::Choice::new(arg, description)))
+                .map(|choice| {
+                    choice.map(|(arg, description)| codec::Suggestion::new(arg, description))
+                })
                 .collect::<Result<Vec<_>, Error>>()?;
             serde_json::to_writer(&mut io::stdout().lock(), &reply).map_err(Error::from)
         })?;
