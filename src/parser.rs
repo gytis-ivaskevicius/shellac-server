@@ -257,7 +257,7 @@ impl TryFrom<Definition> for completion::Definition<String> {
         let mut steps = resolve(steps, 0, &def.sections, keys.as_slice())?;
         steps.push(Step::Match); // Last token is always match
 
-        Ok(Self { num_counters: def.counters, descriptions, steps })
+        Ok(Self { num_counters: def.counters, descriptions, steps, definitions: def.definitions })
     }
 }
 
@@ -300,7 +300,6 @@ where
     }
 }
 
-// TODO: Remove debug
 fn resolve<'a, 'b, T, S>(
     mut alt: Alt<T>,
     mut idx: u8,

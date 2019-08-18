@@ -19,12 +19,18 @@ pub enum Step<T: Ord> {
     Match,
 }
 
+/// Descriptions in various languages
+pub type Descriptions = Vec<BTreeMap<String, String>>; // A HashMap is clearer, but a vec is
+                                                       // faster
+/// Parts to lookup (ex: <file>)
+pub type Definitions = BTreeMap<String, String>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition<T: Ord> {
     pub steps:        Vec<Step<T>>,
     pub num_counters: u8,
-    pub descriptions: Vec<BTreeMap<String, String>>, /* A HashMap is clearer, but a vec is
-                                                      * faster */
+    pub descriptions: Descriptions,
+    pub definitions:  BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -89,25 +95,35 @@ impl<T> Argument<T> {
 }
 
 impl<T: AsRef<str>> Argument<T> {
-    pub fn resolve<'a, O: From<&'a str>>(&'a self, start: &str) -> Option<SuggestionType<O>> {
+    pub fn resolve<'a, O: From<&'a str>>(
+        &'a self,
+        start: &str,
+        defs: &'a Definitions,
+    ) -> Option<SuggestionType<O>> {
         match &self.reference {
             None if self.literal.as_ref().starts_with(start) => {
                 Some(SuggestionType::Literal(O::from(&self.literal.as_ref()[start.len()..])))
             }
             Some(reference) => {
                 let literal = self.literal.as_ref();
-                eprintln!("{} {}", literal, start);
                 if start.starts_with(literal) {
                     let mut start = &start[literal.len()..];
                     for (reference, postfix) in reference {
-                        if postfix.as_ref().is_empty() {
-                            // TODO: FIXME: Return the real command
-                            return Some(SuggestionType::Command(vec![reference.as_ref().into()]));
-                        } else if let Some(pos) = start.find(postfix.as_ref()) {
-                            start = &start[pos..];
-                        } else {
-                            // TODO: FIXME: Return the real command
-                            return Some(SuggestionType::Command(vec![reference.as_ref().into()]));
+                        match start.find(postfix.as_ref()) {
+                            Some(pos) if !postfix.as_ref().is_empty() => start = &start[pos..],
+                            _ => {
+                                let command = defs.get(reference.as_ref())?;
+                                // TODO: allow single quotes and other methods that exec
+                                if !command.starts_with("exec \"") || !command.ends_with('"') {
+                                    return None;
+                                }
+                                return Some(SuggestionType::Command(
+                                    command.as_str()[6..command.len() - 1]
+                                        .split("\" \"")
+                                        .map(O::from)
+                                        .collect(),
+                                ));
+                            }
                         }
                     }
                     None
@@ -195,8 +211,13 @@ fn argmaxes<T, S: Ord, F: Fn(&T) -> S, I: Iterator<Item = T>>(
 // --p => age=
 // --page= => <file>
 impl<T: Ord + AsRef<str>> Arg<T> {
-    pub fn resolve<'a>(&'a self, results: &mut Vec<Suggestion<String>>, arg: &str, counters: &[u8])
-    where
+    pub fn resolve<'a>(
+        &'a self,
+        results: &mut Vec<Suggestion<String>>,
+        arg: &str,
+        counters: &[u8],
+        defs: &Definitions,
+    ) where
         String: From<&'a T>,
     {
         if let Some(regex) = &self.regex {
@@ -212,8 +233,7 @@ impl<T: Ord + AsRef<str>> Arg<T> {
             for option in temp {
                 if option.literal().as_ref().len() == prefix {
                     if option.reference.is_some() {
-                        if let Some(suggestion) = option.resolve(&arg[arg.len() - prefix..]) {
-                            // TODO: FIXME: Return the real command
+                        if let Some(suggestion) = option.resolve(&arg[arg.len() - prefix..], defs) {
                             results.push(Suggestion::new(suggestion, "".into()));
                         }
                     }
@@ -240,7 +260,7 @@ impl<T: Ord + AsRef<str>> Arg<T> {
             }
         } else {
             results.extend(self.choices.iter().filter(|(_, desc)| desc.check(counters)).filter_map(
-                |(choice, _)| choice.resolve(arg).map(|c| Suggestion::new(c, "".into())),
+                |(choice, _)| choice.resolve(arg, defs).map(|c| Suggestion::new(c, "".into())),
             ))
         }
     }
@@ -392,7 +412,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
         for searcher in self.stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &self.def.steps[completion as usize] {
-                    check.resolve(&mut results, arg, &searcher.counters);
+                    check.resolve(&mut results, arg, &searcher.counters, &self.def.definitions);
                 } else {
                     unreachable!()
                 }
