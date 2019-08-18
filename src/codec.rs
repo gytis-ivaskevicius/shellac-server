@@ -17,22 +17,33 @@ pub struct AutocompRequest {
     pub word: u16,
 }
 
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Serialize)]
-pub struct Reply<'a> {
-    pub choices: Vec<Choice<'a>>,
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
+pub struct Reply<T> {
+    pub choices: Vec<Suggestion<T>>,
 }
 
-#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Serialize)]
-pub struct Choice<'a> {
-    arg:         &'a str,
-    description: &'a str,
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
+pub enum SuggestionType<T> {
+    Literal(T),
+    Command(Vec<T>),
 }
 
-impl<'a> Choice<'a> {
-    pub const fn new(arg: &'a str, description: &'a str) -> Self { Choice { arg, description } }
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
+pub struct Suggestion<T> {
+    arg:         SuggestionType<T>,
+    description: T,
 }
 
-pub fn write_reply<W: Write>(writer: &mut W, choices: Vec<String>) -> Result<(), io::Error> {
+impl<T> Suggestion<T> {
+    pub const fn new(arg: SuggestionType<T>, description: T) -> Self {
+        Suggestion { arg, description }
+    }
+}
+
+pub fn write_reply<W: Write>(
+    writer: &mut W,
+    choices: Vec<Suggestion<String>>,
+) -> Result<(), io::Error> {
     let mut message = message::Builder::new_default();
     let reply = message.init_root::<shellac_capnp::response::Builder>();
 
@@ -40,8 +51,16 @@ pub fn write_reply<W: Write>(writer: &mut W, choices: Vec<String>) -> Result<(),
         reply.init_choices(choices.len().try_into().expect("Too many output choices"));
     for (i, choice) in choices.iter().enumerate() {
         let mut reply_choice = reply_choices.reborrow().get(i as u32);
-        reply_choice.set_arg(choice);
-        reply_choice.set_description("");
+        match &choice.arg {
+            SuggestionType::Literal(lit) => reply_choice.reborrow().init_arg().set_literal(&lit),
+            SuggestionType::Command(cmd) => {
+                let mut builder = reply_choice.reborrow().init_arg().init_command(cmd.len() as u32);
+                for (i, arg) in cmd.iter().enumerate() {
+                    builder.set(i as u32, arg);
+                }
+            }
+        }
+        reply_choice.set_description(&choice.description);
     }
 
     capn_serialize::write_message(writer, &message)
@@ -79,18 +98,26 @@ type Out<'a, E> = std::iter::Map<
         capnp::struct_list::Reader<'a, shellac_capnp::suggestion::Owned>,
         shellac_capnp::suggestion::Reader<'a>,
     >,
-    fn(shellac_capnp::suggestion::Reader<'a>) -> Result<(&'a str, &'a str), E>,
+    fn(shellac_capnp::suggestion::Reader<'a>) -> Result<(SuggestionType<&'a str>, &'a str), E>,
 >;
 
-fn convert<'a, T: From<capnp::Error>>(
+fn convert<'a, T: From<capnp::Error> + From<capnp::NotInSchema>>(
     choice: shellac_capnp::suggestion::Reader<'a>,
-) -> Result<(&'a str, &'a str), T> {
-    Ok((choice.get_arg()?, choice.get_description()?))
+) -> Result<(SuggestionType<&'a str>, &'a str), T> {
+    Ok((
+        match choice.get_arg().which()? {
+            shellac_capnp::suggestion::arg::Which::Literal(lit) => SuggestionType::Literal(lit?),
+            shellac_capnp::suggestion::arg::Which::Command(cmd) => {
+                SuggestionType::Command(cmd?.iter().collect::<Result<Vec<_>, _>>()?)
+            }
+        },
+        choice.get_description()?,
+    ))
 }
 
 pub fn read_reply<R, T, E, F>(reader: &mut R, f: F) -> Result<T, E>
 where
-    E: From<capnp::Error>,
+    E: From<capnp::Error> + From<capnp::NotInSchema>,
     R: BufRead,
     F: FnOnce(Out<'_, E>) -> Result<T, E>,
 {
