@@ -218,9 +218,7 @@ impl<T: Ord + AsRef<str>> Arg<T> {
         arg: &str,
         counters: &[u8],
         defs: &Definitions,
-    ) where
-        String: From<&'a T>,
-    {
+    ) {
         if let Some(regex) = &self.regex {
             let (temp, prefix) = argmaxes(
                 self.choices
@@ -314,10 +312,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
     pub fn choices(
         mut self,
         args: &super::shellac_capnp::request::Reader,
-    ) -> Result<Vec<Suggestion<String>>, Error>
-    where
-        String: From<&'a T>,
-    {
+    ) -> Result<Vec<Suggestion<String>>, Error> {
         let argv = args.get_argv().unwrap();
         let word = args.get_word();
         for (i, arg) in argv.iter().map(|arg| arg.unwrap()).enumerate().skip(1) {
