@@ -97,7 +97,7 @@ impl<T> Argument<T> {
 impl<T: AsRef<str>> Argument<T> {
     pub fn resolve<'a, O: From<&'a str>>(
         &'a self,
-        start: &str,
+        start: &'a str,
         defs: &'a Definitions,
     ) -> Option<SuggestionType<O>> {
         match &self.reference {
@@ -122,6 +122,7 @@ impl<T: AsRef<str>> Argument<T> {
                                         .split("\" \"")
                                         .map(O::from)
                                         .collect(),
+                                    O::from(start),
                                 ));
                             }
                         }

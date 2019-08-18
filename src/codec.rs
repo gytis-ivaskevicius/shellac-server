@@ -25,7 +25,7 @@ pub struct Reply<T> {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 pub enum SuggestionType<T> {
     Literal(T),
-    Command(Vec<T>),
+    Command(Vec<T>, T),
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
@@ -53,10 +53,12 @@ pub fn write_reply<W: Write>(
         let mut reply_choice = reply_choices.reborrow().get(i as u32);
         match &choice.arg {
             SuggestionType::Literal(lit) => reply_choice.reborrow().init_arg().set_literal(&lit),
-            SuggestionType::Command(cmd) => {
-                let mut builder = reply_choice.reborrow().init_arg().init_command(cmd.len() as u32);
+            SuggestionType::Command(cmd, prefix) => {
+                let mut builder = reply_choice.reborrow().init_arg().init_command();
+                builder.set_prefix(prefix);
+                let mut args = builder.init_args(cmd.len() as u32);
                 for (i, arg) in cmd.iter().enumerate() {
-                    builder.set(i as u32, arg);
+                    args.set(i as u32, arg);
                 }
             }
         }
@@ -108,7 +110,10 @@ fn convert<'a, T: From<capnp::Error> + From<capnp::NotInSchema>>(
         match choice.get_arg().which()? {
             shellac_capnp::suggestion::arg::Which::Literal(lit) => SuggestionType::Literal(lit?),
             shellac_capnp::suggestion::arg::Which::Command(cmd) => {
-                SuggestionType::Command(cmd?.iter().collect::<Result<Vec<_>, _>>()?)
+                let cmd = cmd?;
+                let prefix = cmd.get_prefix()?;
+                let args = cmd.get_args()?.iter().collect::<Result<Vec<_>, _>>()?;
+                SuggestionType::Command(args, prefix)
             }
         },
         choice.get_description()?,
