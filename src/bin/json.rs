@@ -78,7 +78,7 @@ fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
                     choice.map(|(arg, description)| codec::Suggestion::new(arg, description))
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
-            serde_json::to_writer(&mut io::stdout().lock(), &reply).map_err(Error::from)
+            serde_json::to_writer_pretty(&mut io::stdout().lock(), &reply).map_err(Error::from)
         })?;
     }
     Ok(())
