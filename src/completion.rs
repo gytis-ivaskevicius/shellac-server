@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use regex::Regex;
 use retain_mut::RetainMut;
 
@@ -6,10 +5,11 @@ use std::{
     cmp::{Ord, Ordering, PartialOrd},
     collections::BTreeMap,
 };
-// use std::process::Command;
-// use std::process::Stdio;
 
-use super::Error;
+use super::{
+    codec::{Suggestion, SuggestionType},
+    Error,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step<T: Ord> {
@@ -19,12 +19,18 @@ pub enum Step<T: Ord> {
     Match,
 }
 
+/// Descriptions in various languages
+pub type Descriptions = Vec<BTreeMap<String, String>>; // A HashMap is clearer, but a vec is
+                                                       // faster
+/// Parts to lookup (ex: <file>)
+pub type Definitions = BTreeMap<String, String>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition<T: Ord> {
     pub steps:        Vec<Step<T>>,
     pub num_counters: u8,
-    pub descriptions: Vec<BTreeMap<String, String>>, /* A HashMap is clearer, but a vec is
-                                                      * faster */
+    pub descriptions: Descriptions,
+    pub definitions:  BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -67,13 +73,6 @@ pub struct Argument<T> {
     reference: Option<Vec<(T, T)>>,
 }
 
-#[derive(Debug)]
-pub enum ChoiceResolver<T> {
-    Literal(std::iter::Once<T>),
-    Reference(std::vec::IntoIter<T>),
-    None,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VMSearcher<'a, T: Ord> {
     def:   &'a Definition<T>,
@@ -87,18 +86,6 @@ pub struct Searcher {
     completion: Option<u8>,
 }
 
-impl<T> Iterator for ChoiceResolver<T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            ChoiceResolver::Literal(iter) => iter.next(),
-            ChoiceResolver::Reference(iter) => iter.next(),
-            ChoiceResolver::None => None,
-        }
-    }
-}
-
 impl<T> Argument<T> {
     pub const fn literal(&self) -> &T { &self.literal }
 
@@ -108,58 +95,46 @@ impl<T> Argument<T> {
 }
 
 impl<T: AsRef<str>> Argument<T> {
-    pub fn resolve<O: From<T> + Default + std::fmt::Write>(
-        &self,
-        start: &str,
-    ) -> Result<ChoiceResolver<O>, std::fmt::Error> {
+    pub fn resolve<'a, O: From<&'a str>>(
+        &'a self,
+        start: &'a str,
+        defs: &'a Definitions,
+    ) -> Option<SuggestionType<O>> {
         match &self.reference {
             None if self.literal.as_ref().starts_with(start) => {
-                let mut out = O::default();
-                out.write_str(self.literal.as_ref())?;
-                Ok(ChoiceResolver::Literal(std::iter::once(out)))
+                Some(SuggestionType::Literal(O::from(&self.literal.as_ref()[start.len()..])))
             }
             Some(reference) => {
                 let literal = self.literal.as_ref();
-                if literal != start && literal.starts_with(start) {
-                    let mut out = O::default();
-                    out.write_str(self.literal.as_ref())?;
-                    Ok(ChoiceResolver::Literal(std::iter::once(out)))
-                } else if start.starts_with(literal) {
-                    // if reference == "file" {
-                    // let file_start = start.trim_start_matches(self.literal);
-                    // let out = Command::new("ls")
-                    // .arg("-1")
-                    // .stdout(Stdio::piped())
-                    // .spawn()
-                    // .unwrap()
-                    // .wait_with_output()
-                    // .unwrap();
-                    // ChoiceResolver::Reference(
-                    // String::from_utf8(out.stdout)
-                    // .unwrap()
-                    // .lines()
-                    // .filter(|line| line.starts_with(file_start))
-                    // .map(|line| format!("{}{}", prefix, line))
-                    // .collect::<Vec<_>>()
-                    // .into_iter(),
-                    // )
-                    // } else {
-                    let mut out = O::default();
-                    write!(
-                        &mut out,
-                        "{}{}",
-                        literal,
-                        reference.iter().format_with("", |(reference, postfix), f| f(
-                            &format_args!("<{}>{}", reference.as_ref(), postfix.as_ref())
-                        ))
-                    )?;
-                    Ok(ChoiceResolver::Literal(std::iter::once(out)))
-                // }
+                if start.starts_with(literal) {
+                    let mut start = &start[literal.len()..];
+                    for (reference, postfix) in reference {
+                        match start.find(postfix.as_ref()) {
+                            Some(pos) if !postfix.as_ref().is_empty() => start = &start[pos..],
+                            _ => {
+                                let command = defs.get(reference.as_ref())?;
+                                // TODO: allow single quotes and other methods that exec
+                                if !command.starts_with("exec \"") || !command.ends_with('"') {
+                                    return None;
+                                }
+                                return Some(SuggestionType::Command(
+                                    command.as_str()[6..command.len() - 1]
+                                        .split("\" \"")
+                                        .map(O::from)
+                                        .collect(),
+                                    O::from(start),
+                                ));
+                            }
+                        }
+                    }
+                    None
+                } else if literal.starts_with(start) {
+                    Some(SuggestionType::Literal(O::from(&self.literal.as_ref()[start.len()..])))
                 } else {
-                    Ok(ChoiceResolver::None)
+                    None
                 }
             }
-            _ => Ok(ChoiceResolver::None),
+            _ => None,
         }
     }
 }
@@ -192,59 +167,100 @@ impl<T: Ord> Arg<T> {
     }
 }
 
-impl<T: Ord + AsRef<str>> Arg<T>
-where
-    String: From<T>,
-{
-    pub fn resolve(&self, results: &mut Vec<String>, arg: &str, counters: &[u8]) {
-        if let Some(regex) = &self.regex {
-            let len = arg.len();
-            let mut test = arg.to_string();
+/// Find the number of chars at the end of `start` that overlap with the start of `end`
+///
+/// Ex: overlap("abcdef", "defghij") = 3
+fn overlap(start: &str, end: &str) -> usize {
+    for t in 1..=end.len() {
+        if start.ends_with(&end[..t]) {
+            return t;
+        }
+    }
+    0
+}
 
-            for (option, _) in self.choices.iter().filter(|(_, desc)| desc.check(counters)) {
-                test.truncate(len);
-                test.push_str(option.literal().as_ref());
+/// Get all the values that maximises a given arg
+fn argmaxes<T, S: Ord, F: Fn(&T) -> S, I: Iterator<Item = T>>(
+    mut options: I,
+    f: F,
+) -> Option<(Vec<T>, S)> {
+    if let Some(option) = options.next() {
+        let mut out = Vec::with_capacity(options.size_hint().0);
+        let mut max = f(&option);
+        out.push(option);
 
-                // TODO: this does not check all capture groups
-                if let Some(captures) = regex.captures(&test) {
-                    if captures.iter().filter_map(|x| x).any(|capture| {
-                        self.choices
-                            .keys()
-                            .any(|key| capture.as_str().starts_with(key.literal().as_ref()))
-                    }) {
-                        results.push(test.as_str().into());
-                    }
+        for option in options {
+            let value = f(&option);
+            match value.cmp(&max) {
+                Ordering::Equal => out.push(option),
+                Ordering::Greater => {
+                    max = value;
+                    out.clear();
+                    out.push(option);
                 }
+                Ordering::Less => (),
             }
-            if !results.is_empty() {
-                return;
-            }
-            if let Some(captures) = regex.captures(arg) {
-                results.extend(captures.iter().filter_map(|capture| {
-                    let capture = capture?;
-                    if let Some(choice) = self
-                        .choices
-                        .keys()
-                        .find(|option| option.literal().as_ref().starts_with(capture.as_str()))
-                    {
-                        Some(format!(
-                            "{}{}{}",
-                            &arg[..capture.start()],
-                            choice.literal().as_ref(),
-                            &arg[capture.end()..]
-                        ))
-                    } else {
-                        None
-                    }
-                }));
-            }
-        } else {
-            results.extend(
+        }
+        Some((out, max))
+    } else {
+        None
+    }
+}
+
+// Once we get an arg as a potential match, list all matches for it
+// -- => list long options
+// --p => age=
+// --page= => <file>
+impl<T: Ord + AsRef<str>> Arg<T> {
+    pub fn resolve<'a>(
+        &'a self,
+        results: &mut Vec<Suggestion<String>>,
+        arg: &str,
+        counters: &[u8],
+        defs: &Definitions,
+    ) {
+        if let Some(regex) = &self.regex {
+            let (temp, prefix) = argmaxes(
                 self.choices
                     .iter()
                     .filter(|(_, desc)| desc.check(counters))
-                    .flat_map(|(choice, _)| choice.resolve(arg).unwrap()),
+                    .map(|(option, _)| option),
+                |option| overlap(arg, option.literal().as_ref()),
             )
+            .unwrap();
+
+            for option in temp {
+                if option.literal().as_ref().len() == prefix {
+                    if option.reference.is_some() {
+                        if let Some(suggestion) = option.resolve(&arg[arg.len() - prefix..], defs) {
+                            results.push(Suggestion::new(suggestion, "".into()));
+                        }
+                    }
+                } else {
+                    let len = arg.len();
+                    let mut test = arg.to_string();
+                    test.truncate(len);
+                    test.push_str(&option.literal().as_ref()[prefix..]);
+
+                    // TODO: this does not check all capture groups
+                    if let Some(captures) = regex.captures(&test) {
+                        if captures.iter().filter_map(|x| x).any(|capture| {
+                            self.choices
+                                .keys()
+                                .any(|key| capture.as_str().starts_with(key.literal().as_ref()))
+                        }) {
+                            results.push(Suggestion::new(
+                                SuggestionType::Literal(option.literal().as_ref()[prefix..].into()),
+                                "".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        } else {
+            results.extend(self.choices.iter().filter(|(_, desc)| desc.check(counters)).filter_map(
+                |(choice, _)| choice.resolve(arg, defs).map(|c| Suggestion::new(c, "".into())),
+            ))
         }
     }
 }
@@ -292,18 +308,14 @@ impl<'a, T: Ord> VMSearcher<'a, T> {
     }
 }
 
-impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T>
-where
-    String: From<T>,
-{
+impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
     pub fn choices(
         mut self,
         args: &super::shellac_capnp::request::Reader,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<Vec<Suggestion<String>>, Error> {
         let argv = args.get_argv().unwrap();
         let word = args.get_word();
-        for (i, arg) in argv.iter().enumerate().skip(1) {
-            let arg = arg.unwrap();
+        for (i, arg) in argv.iter().map(|arg| arg.unwrap()).enumerate().skip(1) {
             // Advance to the next argument
             while self.stack.iter().any(|searcher| {
                 if let Step::Check(..) | Step::Match = self.def.steps[searcher.step as usize] {
@@ -354,6 +366,7 @@ where
                         searcher.step();
                         if let Some(regex) = &arg_def.regex {
                             if let Some(captures) = regex.captures(arg) {
+                                // TODO: this only works for one capture group of the same kind
                                 for capture in captures.iter().filter_map(|x| x) {
                                     for (choice, desc) in &arg_def.choices {
                                         if capture.as_str().starts_with(choice.literal().as_ref()) {
@@ -395,7 +408,7 @@ where
         for searcher in self.stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &self.def.steps[completion as usize] {
-                    check.resolve(&mut results, arg, &searcher.counters);
+                    check.resolve(&mut results, arg, &searcher.counters, &self.def.definitions);
                 } else {
                     unreachable!()
                 }

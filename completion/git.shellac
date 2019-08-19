@@ -103,7 +103,7 @@ sections:
       - 'svn'
 
 definitions:
-  file: 'exec("ls")'
+  file: 'exec "ls" "-1"'
 
 desc:
   command:

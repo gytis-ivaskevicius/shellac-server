@@ -1,1 +1,32 @@
-[{"arg":"-c","description":""},{"arg":"-C","description":""}]
+[
+  {
+    "arg": {
+      "Literal": "c"
+    },
+    "description": ""
+  },
+  {
+    "arg": {
+      "Literal": "C"
+    },
+    "description": ""
+  },
+  {
+    "arg": {
+      "Literal": "P"
+    },
+    "description": ""
+  },
+  {
+    "arg": {
+      "Literal": "help"
+    },
+    "description": ""
+  },
+  {
+    "arg": {
+      "Literal": "-"
+    },
+    "description": ""
+  }
+]

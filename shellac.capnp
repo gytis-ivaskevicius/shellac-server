@@ -12,7 +12,15 @@ struct Response {
   choices @0 :List(Suggestion);
 }
 
+struct Command {
+  args @0 :List(Text);
+  prefix @1 :Text;
+}
+
 struct Suggestion {
-  arg @0 :Text;
+  arg :union {
+    literal @0 :Text;
+    command @2 :Command;
+  }
   description @1 :Text;
 }
