@@ -218,22 +218,25 @@ impl<T: Ord + AsRef<str>> Arg<T> {
         arg: &str,
         counters: &[u8],
         defs: &Definitions,
+        descs: &Descriptions,
     ) {
         if let Some(regex) = &self.regex {
             let (temp, prefix) = argmaxes(
-                self.choices
-                    .iter()
-                    .filter(|(_, desc)| desc.check(counters))
-                    .map(|(option, _)| option),
-                |option| overlap(arg, option.literal().as_ref()),
+                self.choices.iter().filter(|(_, desc)| desc.check(counters)),
+                |(option, _)| overlap(arg, option.literal().as_ref()),
             )
             .unwrap();
 
-            for option in temp {
+            for (option, check) in temp {
                 if option.literal().as_ref().len() == prefix {
                     if option.reference.is_some() {
                         if let Some(suggestion) = option.resolve(&arg[arg.len() - prefix..], defs) {
-                            results.push(Suggestion::new(suggestion, "".into()));
+                            results.push(Suggestion::new(
+                                suggestion,
+                                check.description.as_ref().map_or_else(String::new, |desc| {
+                                    descs.get(*desc).unwrap().get("en").unwrap().clone()
+                                }),
+                            ));
                         }
                     }
                 } else {
@@ -251,7 +254,9 @@ impl<T: Ord + AsRef<str>> Arg<T> {
                         }) {
                             results.push(Suggestion::new(
                                 SuggestionType::Literal(option.literal().as_ref()[prefix..].into()),
-                                "".into(),
+                                check.description.as_ref().map_or_else(String::new, |desc| {
+                                    descs.get(*desc).unwrap().get("en").unwrap().clone()
+                                }),
                             ));
                         }
                     }
@@ -259,7 +264,16 @@ impl<T: Ord + AsRef<str>> Arg<T> {
             }
         } else {
             results.extend(self.choices.iter().filter(|(_, desc)| desc.check(counters)).filter_map(
-                |(choice, _)| choice.resolve(arg, defs).map(|c| Suggestion::new(c, "".into())),
+                |(choice, check)| {
+                    choice.resolve(arg, defs).map(|c| {
+                        Suggestion::new(
+                            c,
+                            check.description.as_ref().map_or_else(String::new, |desc| {
+                                descs.get(*desc).unwrap().get("en").unwrap().clone()
+                            }),
+                        )
+                    })
+                },
             ))
         }
     }
@@ -408,7 +422,13 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
         for searcher in self.stack {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &self.def.steps[completion as usize] {
-                    check.resolve(&mut results, arg, &searcher.counters, &self.def.definitions);
+                    check.resolve(
+                        &mut results,
+                        arg,
+                        &searcher.counters,
+                        &self.def.definitions,
+                        &self.def.descriptions,
+                    );
                 } else {
                     unreachable!()
                 }
