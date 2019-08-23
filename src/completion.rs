@@ -149,6 +149,15 @@ impl Choice {
             .as_ref()
             .map_or(true, |sentinel| sentinel.check(counters[sentinel.counter as usize]))
     }
+
+    pub fn description(&self, lang: &str, descs: &Descriptions) -> String {
+        self.description
+            .as_ref()
+            .map(|desc| descs.get(*desc).expect("Invalid index for description"))
+            .map_or_else(String::new, |descs| {
+                descs.get(lang).or_else(|| descs.get("en")).unwrap().clone()
+            })
+    }
 }
 
 impl<T: Ord> Ord for Argument<T> {
@@ -214,6 +223,7 @@ fn argmaxes<T, S: Ord, F: Fn(&T) -> S, I: Iterator<Item = T>>(
 impl<T: Ord + AsRef<str>> Arg<T> {
     pub fn resolve<'a>(
         &'a self,
+        lang: &str,
         results: &mut Vec<Suggestion<String>>,
         arg: &str,
         counters: &[u8],
@@ -231,12 +241,8 @@ impl<T: Ord + AsRef<str>> Arg<T> {
                 if option.literal().as_ref().len() == prefix {
                     if option.reference.is_some() {
                         if let Some(suggestion) = option.resolve(&arg[arg.len() - prefix..], defs) {
-                            results.push(Suggestion::new(
-                                suggestion,
-                                check.description.as_ref().map_or_else(String::new, |desc| {
-                                    descs.get(*desc).unwrap().get("en").unwrap().clone()
-                                }),
-                            ));
+                            results
+                                .push(Suggestion::new(suggestion, check.description(lang, descs)));
                         }
                     }
                 } else {
@@ -254,9 +260,7 @@ impl<T: Ord + AsRef<str>> Arg<T> {
                         }) {
                             results.push(Suggestion::new(
                                 SuggestionType::Literal(option.literal().as_ref()[prefix..].into()),
-                                check.description.as_ref().map_or_else(String::new, |desc| {
-                                    descs.get(*desc).unwrap().get("en").unwrap().clone()
-                                }),
+                                check.description(lang, descs),
                             ));
                         }
                     }
@@ -265,14 +269,9 @@ impl<T: Ord + AsRef<str>> Arg<T> {
         } else {
             results.extend(self.choices.iter().filter(|(_, desc)| desc.check(counters)).filter_map(
                 |(choice, check)| {
-                    choice.resolve(arg, defs).map(|c| {
-                        Suggestion::new(
-                            c,
-                            check.description.as_ref().map_or_else(String::new, |desc| {
-                                descs.get(*desc).unwrap().get("en").unwrap().clone()
-                            }),
-                        )
-                    })
+                    choice
+                        .resolve(arg, defs)
+                        .map(|c| Suggestion::new(c, check.description(lang, descs)))
                 },
             ))
         }
@@ -325,6 +324,7 @@ impl<'a, T: Ord> VMSearcher<'a, T> {
 impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
     pub fn choices(
         mut self,
+        lang: &str,
         args: &super::shellac_capnp::request::Reader,
     ) -> Result<Vec<Suggestion<String>>, Error> {
         let argv = args.get_argv().unwrap();
@@ -423,6 +423,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
             if let Some(completion) = searcher.completion {
                 if let Step::Check(check) = &self.def.steps[completion as usize] {
                     check.resolve(
+                        lang,
                         &mut results,
                         arg,
                         &searcher.counters,

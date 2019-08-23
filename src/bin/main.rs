@@ -40,9 +40,14 @@ struct Opts {
     #[structopt(long, parse(from_os_str))]
     shellcomp: Option<PathBuf>,
 
-    /// Custom location for the socket
+    /// Use a socket rather than the default stdin/out communication
+    /// This is the way shells should communicate with shellac ideally
     #[structopt(short, long, parse(from_os_str))]
     socket: Option<PathBuf>,
+
+    /// Completion for the shell's builtins
+    #[structopt(short, long)]
+    language: Option<String>,
 }
 
 fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
@@ -54,6 +59,7 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
 }
 
 fn handle_client<R: BufRead, W: Write>(
+    lang: &str,
     mut reader: R,
     writer: W,
     cache: &Mutex<LruCache<String, Definition<String>>>,
@@ -70,7 +76,7 @@ fn handle_client<R: BufRead, W: Write>(
             // some reason.
             let choices = if let Some(def) = lock.get(&name.to_string()) {
                 let start = Instant::now();
-                let choices = VMSearcher::new(def).choices(request)?;
+                let choices = VMSearcher::new(def).choices(lang, request)?;
                 eprintln!("Time elapsed: {:?}", start.elapsed());
                 std::mem::drop(lock);
                 choices
@@ -88,7 +94,7 @@ fn handle_client<R: BufRead, W: Write>(
                 };
                 let def = Definition::try_from(def)?;
                 let start = Instant::now();
-                let choices = VMSearcher::new(&def).choices(request)?;
+                let choices = VMSearcher::new(&def).choices(lang, request)?;
                 eprintln!("Time elapsed: {:?}", start.elapsed());
                 lock.put(name.to_string(), def);
                 std::mem::drop(lock);
@@ -116,12 +122,19 @@ fn main() {
             })
             .unwrap();
 
+        let language = Arc::new(opts.language);
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    let language = language.clone();
                     let cache = cache.clone();
                     thread::spawn(move || {
-                        if let Err(err) = handle_client(BufReader::new(&stream), &stream, &cache) {
+                        if let Err(err) = handle_client(
+                            language.as_ref().as_ref().map_or("en", String::as_str),
+                            BufReader::new(&stream),
+                            &stream,
+                            &cache,
+                        ) {
                             eprintln!("Could not execute request: {}", err)
                         }
                     });
@@ -134,7 +147,12 @@ fn main() {
                 }
             }
         }
-    } else if let Err(err) = handle_client(io::stdin().lock(), io::stdout().lock(), &cache) {
+    } else if let Err(err) = handle_client(
+        opts.language.as_ref().map_or("en", String::as_str),
+        io::stdin().lock(),
+        io::stdout().lock(),
+        &cache,
+    ) {
         eprintln!("Could not execute request: {}", err);
         std::process::exit(1);
     }
