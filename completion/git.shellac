@@ -15,7 +15,7 @@ sections:
       - 'info-path'
       - 'p (0;=0;=1)'
       - 'paginate'
-      - 'P'
+      - 'P [command]'
       - 'no-pager'
       - 'no-replace-objects'
       - 'bare'
@@ -107,4 +107,4 @@ definitions:
 
 desc:
   command:
-    en_US: hello world
+    en: hello world
