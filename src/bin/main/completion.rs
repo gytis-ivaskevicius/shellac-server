@@ -6,10 +6,8 @@ use std::{
     collections::BTreeMap,
 };
 
-use super::{
-    codec::{Suggestion, SuggestionType},
-    Error,
-};
+use super::{Error, RequestReader};
+use shellac::{Suggestion, SuggestionType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step<T: Ord> {
@@ -119,13 +117,13 @@ impl<T: AsRef<str>> Argument<T> {
                                 if !command.starts_with("exec \"") || !command.ends_with('"') {
                                     return None;
                                 }
-                                return Some(SuggestionType::Command(
-                                    command.as_str()[6..command.len() - 1]
+                                return Some(SuggestionType::Command {
+                                    command: command.as_str()[6..command.len() - 1]
                                         .split("\" \"")
                                         .map(O::from)
                                         .collect(),
-                                    O::from(start),
-                                ));
+                                    prefix:  O::from(start),
+                                });
                             }
                         }
                     }
@@ -328,7 +326,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
     pub fn choices(
         mut self,
         lang: &str,
-        args: &shellac::Reader,
+        args: &RequestReader,
     ) -> Result<Vec<Suggestion<String>>, Error> {
         let argv = args.get_argv().unwrap();
         let word = args.get_word();

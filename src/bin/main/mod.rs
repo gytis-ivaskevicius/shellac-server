@@ -1,11 +1,19 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+mod codec;
 mod completion;
 mod errors;
 mod parser;
 
 use self::completion::{Definition, VMSearcher};
 use errors::Error;
-use shellac as codec;
+use shellac;
+
+// Codec definition
+#[allow(dead_code)]
+mod shellac_capnp {
+    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
+}
+use shellac_capnp::{request::Reader as RequestReader, response::Builder as ResponseBuilder};
 
 use std::{
     convert::TryFrom,
