@@ -1,10 +1,11 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+mod completion;
+mod errors;
+mod parser;
 
-use shellac::{
-    codec,
-    completion::{Definition, VMSearcher},
-    parser, Error,
-};
+use self::completion::{Definition, VMSearcher};
+use errors::Error;
+use shellac as codec;
 
 use std::{
     convert::TryFrom,
@@ -67,43 +68,45 @@ fn handle_client<R: BufRead, W: Write>(
     let mut writer = BufWriter::new(writer);
     // Check if another request was made
     while !reader.fill_buf()?.is_empty() {
-        if let Err(err) = codec::read_request(&mut reader, |_word, argv, request| {
-            let start = Instant::now();
-            let name = argv.get(0)?;
-            let mut lock = cache.lock()?;
-
-            // Name should not need to be converted to a String, but the LRU cache requires it for
-            // some reason.
-            let choices = if let Some(def) = lock.get(&name.to_string()) {
+        if let Err(err) =
+            codec::read_request::<_, _, Error, _>(&mut reader, |_word, argv, request| {
                 let start = Instant::now();
-                let choices = VMSearcher::new(def).choices(lang, request)?;
-                eprintln!("Time elapsed: {:?}", start.elapsed());
-                std::mem::drop(lock);
-                choices
-            } else {
-                let path = get_comp_file(name)?;
+                let name = argv.get(0).map_err(shellac::Error::from)?;
+                let mut lock = cache.lock()?;
 
-                let mut file = File::open(path)?;
-                let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
-                    Ok(d) => d,
-                    Err(err) => {
-                        eprintln!("Failed to parse definition file for '{}': {}", name, err);
-                        // TODO: return proper error
-                        return Ok(());
-                    }
+                // Name should not need to be converted to a String, but the LRU cache requires it
+                // for some reason.
+                let choices = if let Some(def) = lock.get(&name.to_string()) {
+                    let start = Instant::now();
+                    let choices = VMSearcher::new(def).choices(lang, request)?;
+                    eprintln!("Time elapsed: {:?}", start.elapsed());
+                    std::mem::drop(lock);
+                    choices
+                } else {
+                    let path = get_comp_file(name)?;
+
+                    let mut file = File::open(path)?;
+                    let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
+                        Ok(d) => d,
+                        Err(err) => {
+                            eprintln!("Failed to parse definition file for '{}': {}", name, err);
+                            // TODO: return proper error
+                            return Ok(());
+                        }
+                    };
+                    let def = Definition::try_from(def)?;
+                    let start = Instant::now();
+                    let choices = VMSearcher::new(&def).choices(lang, request)?;
+                    eprintln!("Time elapsed: {:?}", start.elapsed());
+                    lock.put(name.to_string(), def);
+                    std::mem::drop(lock);
+                    choices
                 };
-                let def = Definition::try_from(def)?;
-                let start = Instant::now();
-                let choices = VMSearcher::new(&def).choices(lang, request)?;
+                codec::write_reply(&mut writer, choices)?;
                 eprintln!("Time elapsed: {:?}", start.elapsed());
-                lock.put(name.to_string(), def);
-                std::mem::drop(lock);
-                choices
-            };
-            shellac::codec::write_reply(&mut writer, choices)?;
-            eprintln!("Time elapsed: {:?}", start.elapsed());
-            Ok(())
-        }) {
+                Ok(())
+            })
+        {
             eprintln!("Could not execute request: {}", err);
         }
     }

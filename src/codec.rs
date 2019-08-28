@@ -1,15 +1,45 @@
-use super::{shellac_capnp, Error};
-
 use std::{
     convert::TryInto,
+    fmt,
     io::{self, BufRead, Write},
 };
+
+// Codec definition
+#[allow(dead_code)]
+mod shellac_capnp {
+    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
+}
+pub use shellac_capnp::request::Reader;
 
 use capnp::{
     message::{self, ReaderOptions},
     serialize_packed as capn_serialize,
 };
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+pub enum Error {
+    WordOutOfRange(u16, u32),
+    Capnp(capnp::Error),
+}
+
+impl From<capnp::Error> for Error {
+    fn from(cause: capnp::Error) -> Self { Error::Capnp(cause) }
+}
+
+impl std::error::Error for Error {}
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::WordOutOfRange(word, len) => write!(
+                f,
+                "the word {} can't be autocompleted because it is out of bound for argc = {}",
+                word, len
+            ),
+            Error::Capnp(e) => write!(f, "{}", e),
+        }
+    }
+}
 
 #[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Deserialize)]
 pub struct AutocompRequest {
@@ -72,23 +102,21 @@ pub fn read_request<
     'a,
     R: BufRead + 'a,
     T,
-    F: FnOnce(
-        u16,
-        capnp::text_list::Reader<'_>,
-        &super::shellac_capnp::request::Reader,
-    ) -> Result<T, Error>,
+    E: From<Error>,
+    F: FnOnce(u16, capnp::text_list::Reader<'_>, &shellac_capnp::request::Reader) -> Result<T, E>,
 >(
     reader: &mut R,
     f: F,
-) -> Result<T, Error> {
-    let request = capn_serialize::read_message(reader, ReaderOptions::default())?;
-    let request = request.get_root::<super::shellac_capnp::request::Reader>()?;
+) -> Result<T, E> {
+    let request =
+        capn_serialize::read_message(reader, ReaderOptions::default()).map_err(Into::into)?;
+    let request = request.get_root::<shellac_capnp::request::Reader>().map_err(Into::into)?;
 
-    let argv = request.get_argv()?;
+    let argv = request.get_argv().map_err(Into::into)?;
     let word = request.get_word();
 
-    if word as u32 > argv.len() {
-        Err(Error::WordOutOfRange(word, argv.len()))
+    if u32::from(word) > argv.len() {
+        Err(Error::WordOutOfRange(word, argv.len()).into())
     } else {
         f(word, argv, &request)
     }
@@ -103,9 +131,9 @@ type Out<'a, E> = std::iter::Map<
     fn(shellac_capnp::suggestion::Reader<'a>) -> Result<(SuggestionType<&'a str>, &'a str), E>,
 >;
 
-fn convert<'a, T: From<capnp::Error> + From<capnp::NotInSchema>>(
-    choice: shellac_capnp::suggestion::Reader<'a>,
-) -> Result<(SuggestionType<&'a str>, &'a str), T> {
+fn convert<T: From<capnp::Error> + From<capnp::NotInSchema>>(
+    choice: shellac_capnp::suggestion::Reader,
+) -> Result<(SuggestionType<&str>, &str), T> {
     Ok((
         match choice.get_arg().which()? {
             shellac_capnp::suggestion::arg::Which::Literal(lit) => SuggestionType::Literal(lit?),
@@ -128,13 +156,13 @@ where
 {
     let request = capnp::serialize_packed::read_message(reader, ReaderOptions::default())?;
 
-    let choices = request.get_root::<super::shellac_capnp::response::Reader>()?.get_choices()?;
+    let choices = request.get_root::<shellac_capnp::response::Reader>()?.get_choices()?;
     f(choices.iter().map(convert))
 }
 
 pub fn write_request<W: Write>(writer: &mut W, input: &AutocompRequest) -> Result<(), io::Error> {
     let mut message = capnp::message::Builder::new_default();
-    let mut output = message.init_root::<super::shellac_capnp::request::Builder>();
+    let mut output = message.init_root::<shellac_capnp::request::Builder>();
     output.set_word(input.word);
 
     let len = input.argv.len().try_into().expect("Too many output choices");

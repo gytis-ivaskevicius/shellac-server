@@ -8,7 +8,7 @@ edition = "2018"
 
 [lib]
 name = "shellac"
-path = "src/lib.rs"
+path = "src/codec.rs"
 
 # cargo build --features json
 [[bin]]
@@ -19,7 +19,7 @@ required-features = ["json"]
 # cargo build
 [[bin]]
 name = "shellac"
-path = "src/bin/main.rs"
+path = "src/bin/main/mod.rs"
 
 [dependencies]
 regex = "1.2"

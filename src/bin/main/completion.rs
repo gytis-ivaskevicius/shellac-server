@@ -22,6 +22,8 @@ pub enum Step<T: Ord> {
 /// Descriptions in various languages
 pub type Descriptions = Vec<BTreeMap<String, String>>; // A HashMap is clearer, but a vec is
                                                        // faster
+type DescriptionsRef<'a> = &'a [BTreeMap<String, String>];
+
 /// Parts to lookup (ex: <file>)
 pub type Definitions = BTreeMap<String, String>;
 
@@ -150,7 +152,7 @@ impl Choice {
             .map_or(true, |sentinel| sentinel.check(counters[sentinel.counter as usize]))
     }
 
-    pub fn description(&self, lang: &str, descs: &Descriptions) -> String {
+    pub fn description(&self, lang: &str, descs: DescriptionsRef<'_>) -> String {
         self.description
             .as_ref()
             .map(|desc| descs.get(*desc).expect("Invalid index for description"))
@@ -228,7 +230,7 @@ impl<T: Ord + AsRef<str>> Arg<T> {
         arg: &str,
         counters: &[u8],
         defs: &Definitions,
-        descs: &Descriptions,
+        descs: DescriptionsRef,
     ) {
         if let Some(regex) = &self.regex {
             let (temp, prefix) = argmaxes(
@@ -253,11 +255,12 @@ impl<T: Ord + AsRef<str>> Arg<T> {
 
                     // TODO: this does not check all capture groups
                     if let Some(captures) = regex.captures(&test) {
-                        if captures.iter().filter_map(|x| x).any(|capture| {
+                        let captures_match = captures.iter().filter_map(|x| x).any(|capture| {
                             self.choices
                                 .keys()
                                 .any(|key| capture.as_str().starts_with(key.literal().as_ref()))
-                        }) {
+                        });
+                        if captures_match {
                             results.push(Suggestion::new(
                                 SuggestionType::Literal(option.literal().as_ref()[prefix..].into()),
                                 check.description(lang, descs),
@@ -325,11 +328,11 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
     pub fn choices(
         mut self,
         lang: &str,
-        args: &super::shellac_capnp::request::Reader,
+        args: &shellac::Reader,
     ) -> Result<Vec<Suggestion<String>>, Error> {
         let argv = args.get_argv().unwrap();
         let word = args.get_word();
-        for (i, arg) in argv.iter().map(|arg| arg.unwrap()).enumerate().skip(1) {
+        for (i, arg) in argv.iter().map(Result::unwrap).enumerate().skip(1) {
             // Advance to the next argument
             while self.stack.iter().any(|searcher| {
                 if let Step::Check(..) | Step::Match = self.def.steps[searcher.step as usize] {
@@ -355,7 +358,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
                 }
             }
 
-            if i as u16 == word {
+            if i == word as usize {
                 let def = &self.def;
 
                 self.stack.retain_mut(|searcher| {
@@ -414,7 +417,7 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, T> {
             }
         }
 
-        let arg = &argv.get(word as u32).unwrap();
+        let arg = &argv.get(u32::from(word)).unwrap();
 
         let mut results = Vec::with_capacity(20);
         self.stack.sort_unstable_by_key(|searcher| searcher.completion);
