@@ -59,6 +59,7 @@ struct Opts {
     language: Option<String>,
 }
 
+/// Get the completion file given the first argument
 fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
     // WONTFIX: Does not work on windows
     let path = &Path::new(argv0);
@@ -67,6 +68,7 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
     Ok(path.with_extension("shellac"))
 }
 
+/// Reply to requests until a client closes the read pipe
 fn handle_client<R: BufRead, W: Write>(
     lang: &str,
     mut reader: R,
@@ -76,47 +78,48 @@ fn handle_client<R: BufRead, W: Write>(
     let mut writer = BufWriter::new(writer);
     // Check if another request was made
     while !reader.fill_buf()?.is_empty() {
-        if let Err(err) =
-            codec::read_request::<_, _, Error, _>(&mut reader, |_word, argv, request| {
+        codec::read_request::<_, _, Error, _>(&mut reader, |_word, argv, request| {
+            let start = Instant::now();
+            let name = argv.get(0).map_err(shellac::Error::from)?;
+            let mut lock = cache.lock()?;
+
+            let search = |def| -> Result<_, Error> {
                 let start = Instant::now();
-                let name = argv.get(0).map_err(shellac::Error::from)?;
-                let mut lock = cache.lock()?;
-
-                // Name should not need to be converted to a String, but the LRU cache requires it
-                // for some reason.
-                let choices = if let Some(def) = lock.get(&name.to_string()) {
-                    let start = Instant::now();
-                    let choices = VMSearcher::new(def).choices(lang, request)?;
-                    eprintln!("Time elapsed: {:?}", start.elapsed());
-                    std::mem::drop(lock);
-                    choices
-                } else {
-                    let path = get_comp_file(name)?;
-
-                    let mut file = File::open(path)?;
-                    let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
-                        Ok(d) => d,
-                        Err(err) => {
-                            eprintln!("Failed to parse definition file for '{}': {}", name, err);
-                            // TODO: return proper error
-                            return Ok(());
-                        }
-                    };
-                    let def = Definition::try_from(def)?;
-                    let start = Instant::now();
-                    let choices = VMSearcher::new(&def).choices(lang, request)?;
-                    eprintln!("Time elapsed: {:?}", start.elapsed());
-                    lock.put(name.to_string(), def);
-                    std::mem::drop(lock);
-                    choices
-                };
-                codec::write_reply(&mut writer, choices)?;
+                let choices = VMSearcher::new(def).choices(lang, request)?;
                 eprintln!("Time elapsed: {:?}", start.elapsed());
-                Ok(())
-            })
-        {
-            eprintln!("Could not execute request: {}", err);
-        }
+                Ok(choices)
+            };
+
+            // Name should not need to be converted to a String, but the LRU cache requires it
+            // for some reason.
+            let choices = if let Some(def) = lock.get(&name.to_string()) {
+                // If the definition already exists, use it and search the VM
+                search(def)
+            } else {
+                // Else parse the definition
+                let path = get_comp_file(name)?;
+
+                let mut file = File::open(path)?;
+                let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
+                    Ok(d) => d,
+                    Err(err) => {
+                        eprintln!("Failed to parse definition file for '{}': {}", name, err);
+                        // TODO: return proper error
+                        return Ok(());
+                    }
+                };
+                let def = Definition::try_from(def)?;
+                let choices = search(&def);
+                // Save the definition in the cache for later use
+                lock.put(name.to_string(), def);
+                choices
+            }?;
+            // Drop the lock the earliest possible to avoid stalling
+            std::mem::drop(lock);
+            codec::write_reply(&mut writer, choices)?;
+            eprintln!("Time elapsed: {:?}", start.elapsed());
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -125,9 +128,11 @@ fn main() {
     let opts = Opts::from_args();
     let cache = Arc::new(Mutex::new(LruCache::new(20)));
 
+    // Process on socket if one was specified
     if let Some(path) = opts.socket {
         let listener = UnixListener::bind(&path)
             .or_else(|_| {
+                // If the socket can't be opened, retry after removing a leftover
                 fs::remove_file(&path)?;
                 UnixListener::bind(&path)
             })
@@ -139,6 +144,9 @@ fn main() {
                 Ok(stream) => {
                     let language = language.clone();
                     let cache = cache.clone();
+                    // Start a thread to handle the client without blocking the main thread
+                    // As the expected number of client should be fairly low, there is no need for
+                    // non-blocking IO, and simple thread should suffice
                     thread::spawn(move || {
                         if let Err(err) = handle_client(
                             language.as_ref().as_ref().map_or("en", String::as_str),
@@ -158,6 +166,7 @@ fn main() {
                 }
             }
         }
+    // Else use stdin/out
     } else if let Err(err) = handle_client(
         opts.language.as_ref().map_or("en", String::as_str),
         io::stdin().lock(),
