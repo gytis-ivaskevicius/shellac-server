@@ -5,7 +5,7 @@ use std::{
     io::{self, BufRead, BufReader, Read},
 };
 
-use shellac::codec;
+use shellac;
 
 #[derive(Debug)]
 enum Error {
@@ -65,17 +65,17 @@ fn main() {
 
 fn encode<R: Read>(reader: R) -> Result<(), Error> {
     for request in Deserializer::from_reader(BufReader::new(reader)).into_iter() {
-        codec::write_request(&mut io::stdout().lock(), &request?)?;
+        shellac::write_request(&mut io::stdout().lock(), &request?)?;
     }
     Ok(())
 }
 
 fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
     while !reader.fill_buf()?.is_empty() {
-        codec::read_reply(&mut reader, |iter| {
+        shellac::read_reply(&mut reader, |iter| {
             let reply = iter
                 .map(|choice| {
-                    choice.map(|(arg, description)| codec::Suggestion::new(arg, description))
+                    choice.map(|(arg, description)| shellac::Suggestion::new(arg, description))
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
             serde_json::to_writer_pretty(&mut io::stdout().lock(), &reply).map_err(Error::from)
