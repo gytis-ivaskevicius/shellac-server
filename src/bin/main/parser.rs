@@ -229,20 +229,26 @@ where
     )
 }
 
-fn guard_assignment<I>() -> impl Parser<Input = I, Output = (Operator, u8)>
+fn number<I>() -> impl Parser<Input = I, Output = u8>
 where
     I: Stream<Item = char> + RangeStream,
     I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
     I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    (
-        choice((
-            char('=').map(|_| Operator::Set),
-            char('-').map(|_| Operator::Dec),
-            char('+').map(|_| Operator::Inc),
-        )),
-        from_str(take_while1(|c: char| c.is_digit(10))),
-    )
+    from_str(take_while1(|c: char| c.is_digit(10)))
+}
+
+fn guard_assignment<I>() -> impl Parser<Input = I, Output = Operator>
+where
+    I: Stream<Item = char> + RangeStream,
+    I::Range: combine::stream::Range + combine::parser::combinator::StrLike,
+    I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    choice((
+        (char('='), number()).map(|(_, value)| Operator::Set(value)),
+        (char('-'), number()).map(|(_, value)| Operator::Dec(value)),
+        (char('+'), number()).map(|(_, value)| Operator::Inc(value)),
+    ))
 }
 
 impl TryFrom<Definition> for completion::Definition<String> {
@@ -498,11 +504,11 @@ mod test {
     #[test]
     fn test_sentinel() {
         assert_eq!(
-            Ok((Sentinel::new(1, Some((Ordering::Equal, 2)), Some((Operator::Dec, 3))), "")),
+            Ok((Sentinel::new(1, Some((Ordering::Equal, 2)), Some(Operator::Dec(3))), "")),
             sentinel().easy_parse("1;=2;-3"),
         );
         assert_eq!(
-            Ok((Sentinel::new(1, None, Some((Operator::Dec, 3))), "")),
+            Ok((Sentinel::new(1, None, Some(Operator::Dec(3))), "")),
             sentinel().easy_parse("1;;-3"),
         );
         assert_eq!(Ok((Sentinel::new(1, None, None), "")), sentinel().easy_parse("1;;"),);
@@ -516,11 +522,7 @@ mod test {
                     Argument::new("f", None),
                     completion::Choice::new(
                         Some(1),
-                        Some(Sentinel::new(
-                            1,
-                            Some((Ordering::Equal, 2)),
-                            Some((Operator::Dec, 3))
-                        ))
+                        Some(Sentinel::new(1, Some((Ordering::Equal, 2)), Some(Operator::Dec(3))))
                     ),
                 ),
                 ""
@@ -528,7 +530,7 @@ mod test {
             arg_choice(&["bob", "1"]).easy_parse("f [1] (1;=2;-3)"),
         );
         assert_eq!(
-            Ok((Sentinel::new(1, None, Some((Operator::Dec, 3))), "")),
+            Ok((Sentinel::new(1, None, Some(Operator::Dec(3))), "")),
             sentinel().easy_parse("1;;-3"),
         );
         assert_eq!(Ok((Sentinel::new(1, None, None), "")), sentinel().easy_parse("1;;"),);

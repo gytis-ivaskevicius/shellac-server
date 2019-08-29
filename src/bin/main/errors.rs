@@ -7,9 +7,8 @@ use std::{fmt, io, string::FromUtf8Error, sync::PoisonError};
 pub enum Error {
     Io(io::Error),
     FileNotUtf8(FromUtf8Error),
-    WordOutOfRange(u16, u32),
     Parser(parser::Error),
-    Codec(capnp::Error),
+    Codec(shellac::Error),
     Cache,
 }
 
@@ -21,8 +20,8 @@ impl From<FromUtf8Error> for Error {
     fn from(cause: FromUtf8Error) -> Self { Error::FileNotUtf8(cause) }
 }
 
-impl From<capnp::Error> for Error {
-    fn from(cause: capnp::Error) -> Self { Error::Codec(cause) }
+impl From<shellac::Error> for Error {
+    fn from(cause: shellac::Error) -> Self { Error::Codec(cause) }
 }
 
 impl From<parser::Error> for Error {
@@ -38,11 +37,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io(e) => write!(f, "io error: {}", e),
-            Error::WordOutOfRange(word, len) => write!(
-                f,
-                "the word {} can't be autocompleted because it is out of bound for argc = {}",
-                word, len
-            ),
             Error::FileNotUtf8(e) => write!(f, "The completion file is not valid utf8: {}", e),
             Error::Parser(e) => write!(f, "The completion file was invalid: {}", e),
             Error::Codec(e) => write!(f, "Request decoding failed: {}", e),
