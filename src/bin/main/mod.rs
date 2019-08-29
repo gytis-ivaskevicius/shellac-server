@@ -116,7 +116,7 @@ fn handle_client<R: BufRead, W: Write>(
             }?;
             // Drop the lock the earliest possible to avoid stalling
             std::mem::drop(lock);
-            codec::write_reply(&mut writer, choices)?;
+            codec::write_reply(&mut writer, &choices)?;
             eprintln!("Time elapsed: {:?}", start.elapsed());
             Ok(())
         })?;
