@@ -1,5 +1,4 @@
 use regex::Regex;
-use retain_mut::RetainMut;
 
 use std::{
     borrow::Cow,
@@ -7,7 +6,7 @@ use std::{
     collections::BTreeMap,
 };
 
-use super::{Error, RequestReader};
+use super::Error;
 use shellac::{Suggestion, SuggestionType};
 
 /// A step in matching the definition
@@ -50,7 +49,7 @@ pub struct Arg<T: Ord> {
     regex: Option<Regex>,
     // TODO: Is this the best datastructure? Can we access variables directly? If not, maybe a
     // simple vec with a binary search would be better
-    choices: BTreeMap<Argument<T>, Choice>,
+    choices: BTreeMap<Argument<T>, Choice<T>>,
 }
 
 impl<T: Eq + Ord> Eq for Arg<T> {}
@@ -61,9 +60,11 @@ impl<T: PartialEq + Ord> PartialEq for Arg<T> {
 
 /// The definition of a given choice
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Choice {
+pub struct Choice<O> {
     /// An optional description index
     description: Option<usize>,
+    /// Is there a file to lookup to complete this choice
+    reference: Option<O>,
     /// An optional description of its sentinel
     sentinel: Option<Sentinel>,
 }
@@ -179,9 +180,13 @@ impl<T: AsRef<str>> Argument<T> {
     }
 }
 
-impl Choice {
-    pub const fn new(description: Option<usize>, sentinel: Option<Sentinel>) -> Self {
-        Self { description, sentinel }
+impl<T> Choice<T> {
+    pub const fn new(
+        description: Option<usize>,
+        reference: Option<T>,
+        sentinel: Option<Sentinel>,
+    ) -> Self {
+        Self { description, reference, sentinel }
     }
 
     /// Does the sentinel match?
@@ -213,7 +218,7 @@ impl<T: PartialOrd> PartialOrd for Argument<T> {
 }
 
 impl<T: Ord> Arg<T> {
-    pub fn new(regex: Option<Regex>, choices: BTreeMap<Argument<T>, Choice>) -> Self {
+    pub fn new(regex: Option<Regex>, choices: BTreeMap<Argument<T>, Choice<T>>) -> Self {
         Self { regex, choices }
     }
 }
@@ -379,15 +384,18 @@ impl<'a, T: Ord> VMSearcher<'a, '_, T> {
 
 impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
     /// Search and suggest all the valid option completion
-    pub fn choices(
+    pub fn choices<
+        F: Fn(&str, &[&str], u16, &mut Vec<shellac::Suggestion<String>>) -> Result<(), Error>,
+    >(
         mut self,
         lang: &str,
-        args: &RequestReader,
-    ) -> Result<Vec<Suggestion<String>>, Error> {
-        let argv = args.get_argv().unwrap();
-        let word = args.get_word();
+        word: u16,
+        args: &[&str],
+        complete: F,
+        results: &mut Vec<shellac::Suggestion<String>>,
+    ) -> Result<(), Error> {
         // TODO: This will take down the server if a request is not well formed
-        for (i, arg) in argv.iter().map(Result::unwrap).enumerate().skip(1) {
+        for (i, arg) in args.iter().enumerate() {
             // Advance to the next argument, processing jumps and splits. This avoid keeping a
             // reference to the currently parsed arg in the threads. TODO: is this needed?
             while self.stack.iter().any(|searcher| {
@@ -422,29 +430,23 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
                 // Only borrow the definition
                 let def = self.def;
 
-                self.stack.retain_mut(move |searcher| {
+                let mut next_stack = Vec::with_capacity(self.stack.capacity());
+                for mut searcher in self.stack {
                     // If the step is outside the number of steps, we're trying to continue
                     // matching after a match, so delete the thread
-                    if searcher.step as usize >= def.steps.len() {
-                        return false;
+                    if let Some(Step::Check(..)) = &def.steps.get(searcher.step as usize) {
+                        // The current arg is the one that will need to be expanded at the end
+                        searcher.completion = Some(searcher.step);
+                        searcher.step();
+                        next_stack.push(searcher)
                     }
-
-                    match &def.steps[searcher.step as usize] {
-                        Step::Check(..) => {
-                            // The current arg is the one that will need to be expanded at the end
-                            searcher.completion = Some(searcher.step);
-                            searcher.step();
-                            true
-                        }
-                        // If already on a match, delete the thread
-                        Step::Match => false,
-                        _ => unreachable!(),
-                    }
-                })
+                }
+                self.stack = next_stack;
             } else {
                 let def = self.def;
-                self.stack.retain_mut(|searcher| match def.steps.get(searcher.step as usize) {
-                    Some(Step::Check(ref arg_def)) => {
+                let mut next_stack = Vec::with_capacity(self.stack.capacity());
+                for mut searcher in self.stack {
+                    if let Some(Step::Check(ref arg_def)) = def.steps.get(searcher.step as usize) {
                         searcher.step();
 
                         if let Some(regex) = &arg_def.regex {
@@ -464,36 +466,41 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
                                         }
                                     }
                                 }
-                                true
-                            } else {
-                                // If the regex did not match, delete the thread
-                                false
+                                next_stack.push(searcher);
                             }
                         } else {
                             // In case of a literal, assert that a choice meets the argument
-                            arg_def.choices.iter().any(|(choice, desc)| {
-                                arg.starts_with(choice.literal().as_ref())
-                                    && desc.sentinel.as_ref().map_or(true, |sentinel| {
-                                        // Use short-cuting to update the sentinel automatically if
-                                        // there is a match but not otherwise
-                                        sentinel.check_and_update(
-                                            &mut searcher.counters.to_mut()
-                                                [sentinel.counter as usize],
-                                        )
-                                    })
-                            })
+                            if let Some((_, desc)) =
+                                arg_def.choices.iter().find(|(choice, desc)| {
+                                    arg.starts_with(choice.literal().as_ref())
+                                        && desc.sentinel.as_ref().map_or(true, |sentinel| {
+                                            // Use short-cuting to update the sentinel
+                                            // automatically
+                                            // if
+                                            // there is a match but not otherwise
+                                            sentinel.check_and_update(
+                                                &mut searcher.counters.to_mut()
+                                                    [sentinel.counter as usize],
+                                            )
+                                        })
+                                })
+                            {
+                                if let Some(r) = &desc.reference {
+                                    return complete(
+                                        r.as_ref(),
+                                        &args[i + 1..],
+                                        word - i as u16 - 1,
+                                        results,
+                                    );
+                                }
+                                next_stack.push(searcher);
+                            }
                         }
                     }
-                    // If we're after the end, or at a match, then delete the thread
-                    None | Some(Step::Match) => false,
-                    _ => unreachable!(),
-                });
+                }
+                self.stack = next_stack;
             }
         }
-
-        let arg = &argv.get(u32::from(word)).unwrap();
-
-        let mut results = Vec::with_capacity(20);
 
         // Remove duplicates
         self.stack.sort_unstable_by_key(|searcher| searcher.completion);
@@ -508,8 +515,8 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
                 // Add the possible completions to the results
                 check.resolve(
                     lang,
-                    &mut results,
-                    arg,
+                    results,
+                    args[word as usize],
                     &searcher.counters,
                     &self.def.definitions,
                     &self.def.descriptions,
@@ -518,6 +525,6 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
                 unreachable!()
             }
         }
-        Ok(results)
+        Ok(())
     }
 }

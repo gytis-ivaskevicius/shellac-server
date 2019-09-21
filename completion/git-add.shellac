@@ -1,0 +1,17 @@
+version: 0
+counters: 1
+arguments: '($short)* => <file>'
+
+sections:
+  short:
+    regex: '^-([a-zA-Z])+$'
+    choices:
+      - 'z'
+      - 'i'
+
+definitions:
+  file: 'exec "ls" "-1"'
+
+desc:
+  command:
+    en: hello world

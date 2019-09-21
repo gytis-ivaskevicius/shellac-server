@@ -28,7 +28,6 @@ serde_yaml = "0.8"
 serde_json = { version = "1.0", optional = true }
 capnp = "0.10"
 structopt = "0.2"
-retain_mut = "0.1"
 combine = "3"
 itertools = "0.8"
 lru = "0.1"
