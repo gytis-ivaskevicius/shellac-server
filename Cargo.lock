@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "shellac-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_cmd 0.11.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "capnp 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
