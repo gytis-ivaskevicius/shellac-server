@@ -20,58 +20,55 @@ Parsing goes left-right up to the cursor. And the set of possible states at this
 
 The requirements are in some ways quite different to typical parsing problems such as for a compiler. We don't need all the tokens. An ambiguous parse is not a problem: for completion we have, by definition, an incomplete line. This rules out a PEG parser. A more likely approach is a initial level of recursion but bottom-up style pattern matching at a lower level.
 
+### Top-level arguments definition
+
+The top level sequence of argument describes the general structure of arguments. Literal arguments are allowed to contain [a-zA-Z_\-]. The flow is specified using the following special tokens:
 ```
-{ … } blocks of alternatives (no alternation operator needed)
+|     alternatives (generally inside parentheses or optional bloc)
 <…>   delimits tags these correspond to groups of things that might be completed
-[…]   descriptions and headings
-/…/   regex for consumed characters
-(…)   sentinel conditions
+[]    optional argument
 =>    concatenation (continuation in next argument)
-->    concatenation (splitting the current argument)
-$     named sequence (like <…> in BNF), can be scoped
-@     macro or function invocation, can also be scoped
-=     assign a sequence to a name, newline terminates but blocks and trailing operators allow continuation
+$     named sequence
+*     repeat any number of time
++     repeat one or more time
 ```
 
-Alternation is the default within `{…}` blocks, each alternative can only be passed once unless followed by `(*)`.
+For example, `a-literal => [opt_arg] => ( $short | -c => <file> )*` would be:
+ 1. A literal `a-literal`
+ 2. Possibly `opt_arg`
+ 3. Any number of either:
+   - an argument defined by the "short" definition in the `sections` dict
+   - a literal `-c` followed by a file, which is to be autocompleted based upon an external command, potentially defined in the `definitions` dict.
 
-The following is a sort of example to demonstrate usage
+### Named sequence
 
-```
-version: 0.0                              # declare grammar specification version
-counters: 4
-arguments: ($opts | -x <user>)* => <arg0> => <arg1> => $arg2
+Non-literal arguments must be defined in the `sections` dict. The format includes an optional regex (no `/` needed, see the rust regex crate regex definition), as well as a mandatory set of `choices` that will need to match exactly only in absence of a regex.
+Each choice is composed of:
+ 1. a literal to match either as-is or with the regex capture groups. Dynamic autocompletion (`<…>`) are supported, but won't be validated.
+ 2. An optional "reference". This is useful for subcommand based commands which want to move part of the definition in other files. Specify a shellac file after `...` with which the rest of the arguments will try to be matched. **Note that this can significantly slow down the parser if over-used**. It is thus recommended to only use this feature after a literal and in last position to avoid wasting cycles searching subsets of the arguments.
+ 3. An optional definition name. The name needs to be in square brackets (`[…]`). When autocompleting, this string will be looked-up in the description dictionary (`desc` section of the definiton) and sent to the user.
+ 4. An optional match guard. This is to allow specific counts for arguments, that should, for example, happen only once and/or not when another one is present. This uses the concept of counters, a single unsigned byte reserved for simple tests and arithmetic operations. The syntax is `(<counter>;<test>;<operation>)`. The counter is simply the zero-indexed index of the counter in the array. The test is a single test, based upon `<` (less than), `>` (greater than) and `=` (equal) and a number literal, which will match the choice if and only if the counter passes the test. The operation is executed in case of a match and is made of one operator from `-` (decrement), `+` (increment), and `=` (set) and a number literal. For example `(0;=0;=1)` would use the 0th counter, would match only if the counter is zero, and in case of a match, would set it to one (thus making this option valid only once).
 
-sections:
-  opts = {                             # define a named sequence
-    /-([a-z])|--([a-z\-]{2,})/         # match and ignore unknown options
+For example, `add ...git-add [git-add] (0;<2;+1)` would:
+1. Match only a literal `add` argument
+2. Refer to the git-add definiton upon match
+3. Use the git-add description key from the definition file
+4. Use the counter to make sure the option is only use 2 times (less then 2, then increment).
 
-    f [0] (0;=0;+1)                    # short option with reference to description
-    l [1] (1;=0;+1)
-    long [1] (2;=0;+1)
-    r [2]                              # repeatable option (no conditions)
-    v [3] (3;<3;+1)                    # repeatable with maximum
-    y [4] (4;!0;)                      # option excluded by sentinel
-    o [5] (4;;-1)
-    opt [5] (4;;+1)                    # subgroup incrementing a sentinel
-    do [6]
-    undo [7]
-  }
+### Definitions
 
-  arg2:
-    - snake_case
-    - joined_words
+Definitons are commands to execute for dynamic completion (ex: branches when calling `git checkout`). They are preceded by `exec`, are separated by single spaces, and are a list of quote enclosed strings. For example, `exec "git" "branch" "--format='%(refname:short)'"` would execute `git branch --format='%(refname:short)'` and suggest branch names based upon the current directory. This will be executed by the shell. Currently, there is no support for command chaining (use `sh -c`), nor is there interpolation support.
 
-definitions:
-  arg0: exec("$arg --list-args")  # shell-command to list arguments:descriptions
-  arg1: complete("$arg --list-args")  # Refer to an external definition
+### Descriptions
 
-desc:
-  1:
-    default: "Hilfe ausgeben"       # TBD: mapping of localized descriptions
-  2:
-    default: "Hilfe ausgeben"       # TBD: mapping of localized descriptions
-    de_DE: "Hilfe ausgeben"         # TBD: mapping of localized descriptions
+Localized descriptions. For each description tag, key-value pairs map languages to a string to print to the user. In case a local language description is not provided, the fallback will be `en`.
+
+Zsh has conventions on how to represent default values and units. These could have explicit syntax.
+May also be useful to be able to tag the key verb in per-match descriptions. Sorting matches by it could be useful.
+
+# Example
+
+See the `git.shellac` definition file in the completion subfolder for an example
 
 ### Tags and Descriptions
 
@@ -84,11 +81,7 @@ Common tags might be predefined, e.g.
 * hosts
 For common tags, you can elide the description. We'll need ways to provide options to certain tags like file extensions to be completed. Tags also come with predefined regexes for characters to be consumed.
 
-The grammar files also have the potential to allow for localization of descriptions.
-Zsh has conventions on how to represent default values and units. These could have explicit syntax.
-May also be useful to be able to tag the key verb in per-match descriptions. Sorting matches by it could be useful.
-
 ### Regular Expressions
 
-Regex are full match by default. Simply add .* to match a subset. To allow argument grouping (i.e. tar -xvf), capture groups are used to find argument boundaries.
+Regex are (for now) not full matches by default. Please add `^` and `$` to match the entire argument. To allow argument grouping (i.e. tar -xvf), capture groups are used to find argument boundaries.
 
