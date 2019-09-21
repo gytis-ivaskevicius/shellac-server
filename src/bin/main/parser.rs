@@ -176,7 +176,7 @@ where
 
 fn arg_choice<'a, 'b: 'a, I: 'a, O: 'b, T: 'b, S>(
     descs: &'a [S],
-) -> impl Parser<Input = I, Output = (completion::Argument<O>, completion::Choice)> + 'a
+) -> impl Parser<Input = I, Output = (completion::Argument<O>, completion::Choice<O>)> + 'a
 where
     O: From<I::Range> + Default,
     S: Borrow<T> + 'b,
@@ -188,13 +188,20 @@ where
     (
         argument(),
         spaces(),
+        optional((char('.'), char('.'), char('.'), word::<_, I::Range>())),
+        spaces(),
         optional(between(char('['), char(']'), word::<_, I::Range>())).map(move |desc| {
             desc.and_then(|desc| descs.binary_search_by_key(&desc.into(), |s| s.borrow()).ok())
         }),
         spaces(),
         optional(between(char('('), char(')'), sentinel())),
     )
-        .map(move |(name, _, desc, _, sentinel)| (name, completion::Choice::new(desc, sentinel)))
+        .map(move |(name, _, reference, _, desc, _, sentinel)| {
+            (
+                name,
+                completion::Choice::new(desc, reference.map(|(_, _, _, r)| O::from(r)), sentinel),
+            )
+        })
 }
 
 fn sentinel<I>() -> impl Parser<Input = I, Output = Sentinel>
@@ -371,7 +378,7 @@ where
         match token {
             Token::Argument(arg) => steps.push(Step::Check(completion::Arg::new(
                 None,
-                vec![(arg, completion::Choice::new(None, None))].into_iter().collect(),
+                vec![(arg, completion::Choice::new(None, None, None))].into_iter().collect(),
             ))),
             Token::Group(alt, Repetition::Once) => steps.extend(resolve(alt, start, defs, descs)?),
             Token::Group(alt, Repetition::Optional) => {
@@ -522,6 +529,7 @@ mod test {
                     Argument::new("f", None),
                     completion::Choice::new(
                         Some(1),
+                        None,
                         Some(Sentinel::new(1, Some((Ordering::Equal, 2)), Some(Operator::Dec(3))))
                     ),
                 ),

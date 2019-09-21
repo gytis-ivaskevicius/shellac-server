@@ -68,12 +68,59 @@ fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
     Ok(path.with_extension("shellac"))
 }
 
+fn search(
+    lang: &str,
+    name: &str,
+    argv: &[&str],
+    word: u16,
+    cache: &Mutex<LruCache<String, Arc<Definition<String>>>>,
+    results: &mut Vec<shellac::Suggestion<String>>,
+) -> Result<(), Error> {
+    let mut lock = cache.lock()?;
+
+    // Name should not need to be converted to a String, but the LRU cache requires it
+    // for some reason.
+    let def = if let Some(def) = lock.get(&name.to_string()) {
+        def.clone()
+    } else {
+        // Else parse the definition
+        let path = get_comp_file(name)?;
+
+        let mut file = File::open(path)?;
+        let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
+            Ok(d) => d,
+            Err(err) => {
+                eprintln!("Failed to parse definition file for '{}': {}", name, err);
+                // TODO: return proper error
+                return Ok(());
+            }
+        };
+        let def = Arc::new(Definition::try_from(def)?);
+        // Save the definition in the cache for later use
+        lock.put(name.to_string(), def.clone());
+        def
+    };
+    // Drop the lock the earliest possible to avoid stalling
+    std::mem::drop(lock);
+
+    let start_2 = Instant::now();
+    VMSearcher::new(&def).choices(
+        lang,
+        word,
+        argv,
+        |name, args, word, results| search(lang, name, args, word, cache, results),
+        results,
+    )?;
+    eprintln!("Search took: {:?}", start_2.elapsed());
+    Ok(())
+}
+
 /// Reply to requests until a client closes the read pipe
 fn handle_client<R: BufRead, W: Write>(
     lang: &str,
     mut reader: R,
     writer: W,
-    cache: &Mutex<LruCache<String, Definition<String>>>,
+    cache: &Mutex<LruCache<String, Arc<Definition<String>>>>,
 ) -> Result<(), Error> {
     let mut writer = BufWriter::new(writer);
     // Check if another request was made
@@ -81,43 +128,18 @@ fn handle_client<R: BufRead, W: Write>(
         codec::read_request::<_, _, Error, _>(&mut reader, |_word, argv, request| {
             let start = Instant::now();
             let name = argv.get(0).map_err(shellac::Error::from)?;
-            let mut lock = cache.lock()?;
-
-            let search = |def| -> Result<_, Error> {
-                let start = Instant::now();
-                let choices = VMSearcher::new(def).choices(lang, request)?;
-                eprintln!("Time elapsed: {:?}", start.elapsed());
-                Ok(choices)
-            };
-
-            // Name should not need to be converted to a String, but the LRU cache requires it
-            // for some reason.
-            let choices = if let Some(def) = lock.get(&name.to_string()) {
-                // If the definition already exists, use it and search the VM
-                search(def)
-            } else {
-                // Else parse the definition
-                let path = get_comp_file(name)?;
-
-                let mut file = File::open(path)?;
-                let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
-                    Ok(d) => d,
-                    Err(err) => {
-                        eprintln!("Failed to parse definition file for '{}': {}", name, err);
-                        // TODO: return proper error
-                        return Ok(());
-                    }
-                };
-                let def = Definition::try_from(def)?;
-                let choices = search(&def);
-                // Save the definition in the cache for later use
-                lock.put(name.to_string(), def);
-                choices
-            }?;
-            // Drop the lock the earliest possible to avoid stalling
-            std::mem::drop(lock);
+            let mut choices = Vec::with_capacity(20);
+            let argv = request
+                .get_argv()
+                .unwrap()
+                .iter()
+                .skip(1)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(shellac::Error::from)?;
+            let word = request.get_word();
+            search(lang, name, &argv, word, cache, &mut choices)?;
             codec::write_reply(&mut writer, &choices)?;
-            eprintln!("Time elapsed: {:?}", start.elapsed());
+            eprintln!("Complete request: {:?}", start.elapsed());
             Ok(())
         })?;
     }
