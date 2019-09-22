@@ -66,6 +66,12 @@ Localized descriptions. For each description tag, key-value pairs map languages 
 Zsh has conventions on how to represent default values and units. These could have explicit syntax.
 May also be useful to be able to tag the key verb in per-match descriptions. Sorting matches by it could be useful.
 
+## Dynamic completion
+
+For security and usability reasons, dynamic completion executes on the client-side (shell side). This means it's not necessary for the shell to pass elevated permissions, current working directory and/or env vars to the completion server. It also means the shell can at its will add a timeout or various restrictions to the command being run. Thus, the only permissions needed are read access to some directories.
+
+Output of the commands also don't need to be passed back to the shellac server. A filter is provided by the server to filter the commands based upon what the user typed. So for example `cat myfile<tab>` would send `ls -1` to execute with prefix `myfile`.
+
 # Example
 
 See the `git.shellac` definition file in the completion subfolder for an example
