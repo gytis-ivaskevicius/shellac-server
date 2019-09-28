@@ -150,7 +150,9 @@ impl<T: AsRef<str>> Argument<T> {
                 let mut start = &start[literal.len()..];
                 for (reference, postfix) in reference {
                     // If the prefix is found, trim it
-                    if let Some(pos) = start.find(postfix.as_ref()) {
+                    if let Some(pos) =
+                        start.find(postfix.as_ref()).filter(|_| !postfix.as_ref().is_empty())
+                    {
                         start = &start[pos..];
                     // Else return the a potential autocompletion match
                     } else {

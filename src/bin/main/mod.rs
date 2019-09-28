@@ -106,8 +106,8 @@ fn search(
     let start_2 = Instant::now();
     VMSearcher::new(&def).choices(
         lang,
-        word - 1,
-        &argv[1..],
+        word,
+        argv,
         |name, args, word, results| search(lang, name, args, word, cache, results),
         results,
     )?;
@@ -137,7 +137,7 @@ fn handle_client<R: BufRead, W: Write>(
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(shellac::Error::from)?;
             let word = request.get_word();
-            search(lang, name, &argv, word, cache, &mut choices)?;
+            search(lang, name, &argv[1..], word - 1, cache, &mut choices)?;
             codec::write_reply(&mut writer, &choices)?;
             eprintln!("Complete request: {:?}", start.elapsed());
             Ok(())
