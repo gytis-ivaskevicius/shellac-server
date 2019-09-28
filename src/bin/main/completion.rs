@@ -394,7 +394,6 @@ impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
         complete: F,
         results: &mut Vec<shellac::Suggestion<String>>,
     ) -> Result<(), Error> {
-        // TODO: This will take down the server if a request is not well formed
         for (i, arg) in args.iter().enumerate() {
             // Advance to the next argument, processing jumps and splits. This avoid keeping a
             // reference to the currently parsed arg in the threads. TODO: is this needed?

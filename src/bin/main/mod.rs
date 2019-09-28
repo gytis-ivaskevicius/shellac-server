@@ -106,8 +106,8 @@ fn search(
     let start_2 = Instant::now();
     VMSearcher::new(&def).choices(
         lang,
-        word,
-        argv,
+        word - 1,
+        &argv[1..],
         |name, args, word, results| search(lang, name, args, word, cache, results),
         results,
     )?;
