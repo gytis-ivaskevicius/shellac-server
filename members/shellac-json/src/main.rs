@@ -1,11 +1,8 @@
 use serde_json::Deserializer;
-
 use std::{
     env, fmt,
     io::{self, BufRead, BufReader, Read},
 };
-
-use shellac;
 
 #[derive(Debug)]
 enum Error {
@@ -65,17 +62,18 @@ fn main() {
 
 fn encode<R: Read>(reader: R) -> Result<(), Error> {
     for request in Deserializer::from_reader(BufReader::new(reader)).into_iter() {
-        shellac::write_request(&mut io::stdout().lock(), &request?)?;
+        shellac_codec::write_request(&mut io::stdout().lock(), &request?)?;
     }
     Ok(())
 }
 
 fn decode<R: BufRead>(mut reader: R) -> Result<(), Error> {
     while !reader.fill_buf()?.is_empty() {
-        shellac::read_reply(&mut reader, |iter| {
+        shellac_codec::read_reply(&mut reader, |iter| {
             let reply = iter
                 .map(|choice| {
-                    choice.map(|(arg, description)| shellac::Suggestion::new(arg, description))
+                    choice
+                        .map(|(arg, description)| shellac_codec::Suggestion::new(arg, description))
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
             serde_json::to_writer_pretty(&mut io::stdout().lock(), &reply).map_err(Error::from)

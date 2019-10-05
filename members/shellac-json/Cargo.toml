@@ -1,22 +1,20 @@
 [package]
-name = "shellac-server"
+name = "shellac-json"
 version = "0.2.0"
 authors = ["Xavier L'Heureux <xavier.lheureux@icloud.com>"]
 edition = "2018"
 license = "MIT"
-description = "Shell-Agnostic Completion server: command argument autocompletion description"
+description = "Shell-Agnostic Completion server: command argument autocompletion JSON conversion"
 repository = "https://gitlab.redox-os.org/AdminXVII/shellac-server"
 readme = "README.md"
 keywords = ["shellac", "autocompletion", "shell", "ShellAC", "CLI"]
 categories = ["command-line-interface", "command-line-utilities", "config"]
+
 maintenance = { status = "experimental" }
 
 [dependencies]
-shellac-codec = { path = "members/shellac-codec", version = "0.2" }
-regex = "1.2"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.8"
+serde_json = { version = "1.0" }
+shellac-codec = { path = "../shellac-codec", version = "0.2" }
+capnp = "0.10"
 structopt = "0.2"
-combine = "3"
-itertools = "0.8"
-lru = "0.1"

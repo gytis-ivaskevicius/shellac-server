@@ -8,7 +8,7 @@ pub enum Error {
     Io(io::Error),
     FileNotUtf8(FromUtf8Error),
     Parser(parser::Error),
-    Codec(shellac::Error),
+    Codec(shellac_codec::Error),
     Cache,
 }
 
@@ -20,8 +20,8 @@ impl From<FromUtf8Error> for Error {
     fn from(cause: FromUtf8Error) -> Self { Error::FileNotUtf8(cause) }
 }
 
-impl From<shellac::Error> for Error {
-    fn from(cause: shellac::Error) -> Self { Error::Codec(cause) }
+impl From<shellac_codec::Error> for Error {
+    fn from(cause: shellac_codec::Error) -> Self { Error::Codec(cause) }
 }
 
 impl From<parser::Error> for Error {

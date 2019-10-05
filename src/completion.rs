@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::Error;
-use shellac::{Suggestion, SuggestionType};
+use shellac_codec::{Suggestion, SuggestionType};
 
 /// A step in matching the definition
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,14 +387,14 @@ impl<'a, T: Ord> VMSearcher<'a, '_, T> {
 impl<'a, T: AsRef<str> + Ord> VMSearcher<'a, '_, T> {
     /// Search and suggest all the valid option completion
     pub fn choices<
-        F: Fn(&str, &[&str], u16, &mut Vec<shellac::Suggestion<String>>) -> Result<(), Error>,
+        F: Fn(&str, &[&str], u16, &mut Vec<shellac_codec::Suggestion<String>>) -> Result<(), Error>,
     >(
         mut self,
         lang: &str,
         word: u16,
         args: &[&str],
         complete: F,
-        results: &mut Vec<shellac::Suggestion<String>>,
+        results: &mut Vec<shellac_codec::Suggestion<String>>,
     ) -> Result<(), Error> {
         for (i, arg) in args.iter().enumerate() {
             // Advance to the next argument, processing jumps and splits. This avoid keeping a
