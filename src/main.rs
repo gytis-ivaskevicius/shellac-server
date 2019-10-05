@@ -1,19 +1,10 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-mod codec;
 mod completion;
 mod errors;
 mod parser;
 
 use self::completion::{Definition, VMSearcher};
 use errors::Error;
-use shellac;
-
-// Codec definition
-#[allow(dead_code)]
-mod shellac_capnp {
-    include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
-}
-use shellac_capnp::{request::Reader as RequestReader, response::Builder as ResponseBuilder};
 
 use std::{
     convert::TryFrom,
@@ -74,7 +65,7 @@ fn search(
     argv: &[&str],
     word: u16,
     cache: &Mutex<LruCache<String, Arc<Definition<String>>>>,
-    results: &mut Vec<shellac::Suggestion<String>>,
+    results: &mut Vec<shellac_codec::Suggestion<String>>,
 ) -> Result<(), Error> {
     let mut lock = cache.lock()?;
 
@@ -125,9 +116,9 @@ fn handle_client<R: BufRead, W: Write>(
     let mut writer = BufWriter::new(writer);
     // Check if another request was made
     while !reader.fill_buf()?.is_empty() {
-        codec::read_request::<_, _, Error, _>(&mut reader, |_word, argv, request| {
+        shellac_codec::read_request::<_, _, Error, _>(&mut reader, |_word, argv, request| {
             let start = Instant::now();
-            let name = argv.get(0).map_err(shellac::Error::from)?;
+            let name = argv.get(0).map_err(shellac_codec::Error::from)?;
             let mut choices = Vec::with_capacity(20);
             let argv = request
                 .get_argv()
@@ -135,10 +126,10 @@ fn handle_client<R: BufRead, W: Write>(
                 .iter()
                 .skip(1)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(shellac::Error::from)?;
+                .map_err(shellac_codec::Error::from)?;
             let word = request.get_word();
             search(lang, name, &argv[1..], word - 1, cache, &mut choices)?;
-            codec::write_reply(&mut writer, &choices)?;
+            shellac_codec::write_reply(&mut writer, &choices)?;
             eprintln!("Complete request: {:?}", start.elapsed());
             Ok(())
         })?;

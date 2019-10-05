@@ -1,3 +1,9 @@
+use capnp::{
+    message::{self, ReaderOptions},
+    serialize_packed as capn_serialize,
+};
+use serde::{Deserialize, Serialize};
+use shellac_capnp::{request::Reader as RequestReader, response::Builder as ResponseBuilder};
 use std::{
     convert::TryInto,
     fmt,
@@ -9,9 +15,6 @@ use std::{
 mod shellac_capnp {
     include!(concat!(env!("OUT_DIR"), "/shellac_capnp.rs"));
 }
-
-use capnp::message::ReaderOptions;
-use serde::{Deserialize, Serialize};
 
 /// Parsing error
 #[derive(Debug)]
@@ -181,4 +184,65 @@ pub fn write_request<W: Write>(writer: &mut W, input: &AutocompRequest) -> Resul
     }
 
     capnp::serialize_packed::write_message(writer, &message)
+}
+
+/// Send a reply like the `ShellAC` server would to the other end of a the Writer, where a client
+/// would listen. You should not need this
+pub fn write_reply<'a, W: Write, T: AsRef<str> + 'a, I: IntoIterator<Item = &'a Suggestion<T>>>(
+    writer: &mut W,
+    choices: I,
+) -> Result<(), io::Error>
+where
+    I::IntoIter: ExactSizeIterator,
+{
+    let mut message = message::Builder::new_default();
+    let reply = message.init_root::<ResponseBuilder>();
+
+    let choices = choices.into_iter();
+    let mut reply_choices =
+        reply.init_choices(choices.len().try_into().expect("Too many output choices"));
+    for (i, choice) in choices.enumerate() {
+        let mut reply_choice = reply_choices.reborrow().get(i as u32);
+        match choice.suggestion() {
+            SuggestionType::Literal(lit) => {
+                reply_choice.reborrow().init_arg().set_literal(lit.as_ref())
+            }
+            SuggestionType::Command { command, prefix } => {
+                let mut builder = reply_choice.reborrow().init_arg().init_command();
+                builder.set_prefix(prefix.as_ref());
+                let mut args = builder.init_args(command.len() as u32);
+                for (i, arg) in command.iter().enumerate() {
+                    args.set(i as u32, arg.as_ref());
+                }
+            }
+        }
+        reply_choice.set_description(choice.description().as_ref());
+    }
+
+    capn_serialize::write_message(writer, &message)
+}
+
+/// Read a `ShellAC` Request without allocating. You should not need this
+pub fn read_request<
+    'a,
+    R: BufRead + 'a,
+    T,
+    E: From<Error>,
+    F: FnOnce(u16, capnp::text_list::Reader<'_>, &RequestReader) -> Result<T, E>,
+>(
+    reader: &mut R,
+    f: F,
+) -> Result<T, E> {
+    let request =
+        capn_serialize::read_message(reader, ReaderOptions::default()).map_err(Into::into)?;
+    let request = request.get_root::<RequestReader>().map_err(Into::into)?;
+
+    let argv = request.get_argv().map_err(Into::into)?;
+    let word = request.get_word();
+
+    if u32::from(word) > argv.len() {
+        Err(Error::WordOutOfRange { word, argv_len: argv.len() }.into())
+    } else {
+        f(word, argv, &request)
+    }
 }
