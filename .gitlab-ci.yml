@@ -39,6 +39,8 @@ linux:stable:
   script:
     - cargo check
     - cd members/shellac-json && cargo build && cd ../..
+    - mkdir -p ~/.local/share/shellac
+    - cp completion/*.shellac ~/.local/share/shellac/
     # Simple integration test
     - ./members/shellac-json/target/debug/shellac-json encode '{"word":4,"argv":["git","-f","-f","-p","-"]}' | cargo run | ./members/shellac-json/target/debug/shellac-json decode > tests/result 2> /dev/null
     - diff tests/result tests/expected

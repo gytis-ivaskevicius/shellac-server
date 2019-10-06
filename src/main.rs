@@ -8,6 +8,7 @@ use errors::Error;
 
 use std::{
     convert::TryFrom,
+    env,
     fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, ErrorKind, Write},
     os::unix::net::UnixListener,
@@ -51,12 +52,27 @@ struct Opts {
 }
 
 /// Get the completion file given the first argument
-fn get_comp_file(argv0: &str) -> io::Result<PathBuf> {
+fn get_comp_file(argv0: &str) -> io::Result<File> {
     // WONTFIX: Does not work on windows
     let path = &Path::new(argv0);
-    let path = Path::new("completion").join(&path.file_name().unwrap());
-    // TODO: check if this is not a file
-    Ok(path.with_extension("shellac"))
+    let file_name = path.file_name().unwrap();
+    (&[
+        Some(Path::new("/usr/share/shellac")),
+        Some(Path::new("/usr/local/share/shellac")),
+        env::var_os("HOME")
+            .map(|home| Path::new(&home).join(".local/share/shellac"))
+            .as_ref()
+            .map(PathBuf::as_path),
+    ])
+        .iter()
+        .filter_map(|x| x.as_ref())
+        .find_map(|folder| File::open(folder.join(&file_name).with_extension("shellac")).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::NotFound,
+                format!("The shellac definition for the binary '{}' could not be found", argv0),
+            )
+        })
 }
 
 fn search(
@@ -75,9 +91,8 @@ fn search(
         def.clone()
     } else {
         // Else parse the definition
-        let path = get_comp_file(name)?;
+        let mut file = get_comp_file(name)?;
 
-        let mut file = File::open(path)?;
         let def = match serde_yaml::from_reader::<_, parser::Definition>(&mut file) {
             Ok(d) => d,
             Err(err) => {
