@@ -1,13 +1,15 @@
 {
   inputs = {
+    nixpkgs.url = github:NixOS/nixpkgs/nixos-unstable-small;
+
     # Rust projects support. Custom version of mozilla toolchain can be easily added
-    naersk.url = "github:nmattia/naersk";
+    naersk.url = github:nmattia/naersk;
 
     # Fancy '$ nix develop'
-    devshell.url = "github:numtide/devshell";
+    devshell.url = github:numtide/devshell;
 
     # Few utils to iterate over supported systems.
-    utils.url = "github:numtide/flake-utils";
+    utils.url = github:numtide/flake-utils;
   };
 
   outputs = { self, nixpkgs, utils, naersk, devshell }:
