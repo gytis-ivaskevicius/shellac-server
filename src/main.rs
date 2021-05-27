@@ -57,8 +57,12 @@ fn get_comp_file(argv0: &str) -> io::Result<File> {
     let path = &Path::new(argv0);
     let file_name = path.file_name().unwrap();
     (&[
+        // TODO: Fix up according to XDG standard
         Some(Path::new("/usr/share/shellac")),
         Some(Path::new("/usr/local/share/shellac")),
+        env::var_os("SHELLAC_COMPLETIONS_DIR")
+            .as_ref()
+            .map(|it| Path::new(it)),
         env::var_os("HOME")
             .map(|home| Path::new(&home).join(".local/share/shellac"))
             .as_ref()

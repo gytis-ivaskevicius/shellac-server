@@ -26,6 +26,8 @@
           pname = "shellac-server";
           nativeBuildInputs = with pkgs; [ capnproto ];
           copySources = [ "members" ];
+          completion = ./completion;
+          postInstall = "cp -R $completion $out/completion ";
           root = ./.;
         };
 
